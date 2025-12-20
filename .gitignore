@@ -60,3 +60,5 @@ predictions.tsv
 .DS_Store
 Thumbs.db
 
+# datasets
+datasets/
