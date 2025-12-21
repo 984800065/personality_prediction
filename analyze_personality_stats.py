@@ -179,42 +179,22 @@ def analyze_demographic_features(
     df = pd.read_csv(train_tsv_path, sep='\t')
     print(f"总样本数: {len(df)}")
     
-    # 定义字段映射（用于美化输出）
+    # 定义字段名称（用于输出）
     field_mapping = {
         'gender': {
-            'name': '性别 (Gender)',
-            'values': {1: '男性 (Male)', 2: '女性 (Female)', 'unknown': '未知 (Unknown)'}
+            'name': '性别 (Gender)'
         },
         'education': {
-            'name': '教育程度 (Education)',
-            'values': {
-                1: '小学 (Elementary)',
-                2: '初中 (Middle School)',
-                3: '高中 (High School)',
-                4: '大专 (Associate)',
-                5: '本科 (Bachelor)',
-                6: '硕士 (Master)',
-                7: '博士 (Doctorate)',
-                'unknown': '未知 (Unknown)'
-            }
+            'name': '教育程度 (Education)'
         },
         'race': {
-            'name': '种族 (Race)',
-            'values': {
-                1: '白人 (White)',
-                2: '黑人 (Black)',
-                3: '亚裔 (Asian)',
-                4: '其他 (Other)',
-                'unknown': '未知 (Unknown)'
-            }
+            'name': '种族 (Race)'
         },
         'age': {
-            'name': '年龄 (Age)',
-            'type': 'numeric'
+            'name': '年龄 (Age)'
         },
         'income': {
-            'name': '收入 (Income)',
-            'type': 'numeric'
+            'name': '收入 (Income)'
         }
     }
     
@@ -316,12 +296,8 @@ def analyze_demographic_features(
             for value, count in value_counts.items():
                 pct = count / total_count * 100
                 cumulative += pct
-                # 尝试将值转换为整数以便映射（如果是数字字符串）
-                try:
-                    value_int = int(float(value)) if value != 'unknown' else value
-                    value_label = field_mapping[field]['values'].get(value_int, f'未知值: {value}')
-                except (ValueError, TypeError):
-                    value_label = field_mapping[field]['values'].get(value, f'未知值: {value}')
+                # 直接显示原始值，不做任何映射
+                value_label = str(value)
                 print(f"{value_label:<20s} {count:>8d} {pct:>8.1f}% {cumulative:>8.1f}%")
                 distribution[str(value)] = {'count': int(count), 'percentage': float(pct)}
             
@@ -416,12 +392,8 @@ def analyze_demographic_features(
                 for value in valid_values:
                     mask = (field_data == str(value))
                     if mask.sum() > 0:
-                        # 尝试将值转换为整数以便映射
-                        try:
-                            value_int = int(float(value)) if str(value) != 'unknown' else value
-                            value_label = field_mapping[field]['values'].get(value_int, f'值: {value}')
-                        except (ValueError, TypeError):
-                            value_label = field_mapping[field]['values'].get(value, f'值: {value}')
+                        # 直接显示原始值，不做任何映射
+                        value_label = str(value)
                         row = f"{value_label:<20s}"
                         
                         for col in personality_columns:
@@ -465,11 +437,8 @@ def analyze_demographic_features(
                 f.write(f"缺失样本数: {results[field]['missing_count']}\n\n")
                 f.write("分布统计:\n")
                 for value, info in results[field]['distribution'].items():
-                    try:
-                        value_int = int(float(value)) if str(value) != 'unknown' else value
-                        value_label = field_mapping[field]['values'].get(value_int, f'值: {value}')
-                    except (ValueError, TypeError):
-                        value_label = field_mapping[field]['values'].get(value, f'值: {value}')
+                    # 直接显示原始值，不做任何映射
+                    value_label = str(value)
                     f.write(f"  {value_label}: {info['count']} ({info['percentage']:.1f}%)\n")
     
     print(f"\n{'='*80}")
