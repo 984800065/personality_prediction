@@ -112,11 +112,21 @@ def main():
     # 加载tokenizer
     logger.info(f"加载tokenizer: {base_model}")
     # 某些模型（如gte-multilingual）需要trust_remote_code=True
+    local_files_only = config.local_files_only
+    if local_files_only:
+        logger.info("✓ 仅使用本地模型文件，不连接 Hugging Face")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model, 
+            trust_remote_code=True,
+            local_files_only=local_files_only
+        )
     except Exception:
         # 如果失败，尝试不使用trust_remote_code
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            local_files_only=local_files_only
+        )
     
     # 创建模型
     logger.info("创建模型...")
@@ -132,12 +142,14 @@ def main():
             num_labels=5,
             use_improved_pooling=checkpoint_config.get('use_improved_pooling', True) if checkpoint_config else True,
             use_mlp_head=checkpoint_config.get('use_mlp_head', True) if checkpoint_config else True,
-            mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', 256) if checkpoint_config else 256
+            mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', 256) if checkpoint_config else 256,
+            local_files_only=config.local_files_only
         )
     else:
         model = PersonalityPredictor(
             base_model_name=base_model,
-            num_labels=5
+            num_labels=5,
+            local_files_only=config.local_files_only
         )
     
     # 加载权重

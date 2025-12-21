@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm.auto import tqdm
 import numpy as np
 from pathlib import Path
@@ -181,8 +182,7 @@ def train_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
             optimizer.step()
         
-        # 先optimizer.step()，再scheduler.step()（PyTorch 1.1.0+要求）
-        scheduler.step()
+        # 注意：ReduceLROnPlateau 不在每个batch后调用，而是在验证后调用
         
         # 记录
         total_loss += loss.item()
@@ -195,7 +195,9 @@ def train_epoch(
         # 记录到TensorBoard
         if writer and (batch_idx + 1) % log_interval == 0:
             writer.add_scalar('Train/Loss', loss.item(), global_step)
-            writer.add_scalar('Train/LearningRate', scheduler.get_last_lr()[0], global_step)
+            # 记录当前学习率（从optimizer获取）
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Train/LearningRate', current_lr, global_step)
             global_step += 1
     
     # 计算指标
@@ -281,15 +283,17 @@ def main() -> None:
     
     args = parser.parse_args()
     
-    # 如果指定了配置文件，重新加载
+    # 如果指定了配置文件，重新加载（必须使用 global 声明才能覆盖全局变量）
     if args.config:
         from config import Config
+        logger.info(f"使用配置文件: {args.config}")
+        # 重要：使用 global 声明，确保覆盖全局的 config 变量
+        global config
         config = Config(args.config)
-        logger = setup_logger(
-            log_level=config.log_level,
-            log_file=config.log_file,
-            log_dir=config.log_dir
-        )
+        logger.info(f"✓ 配置已从 {args.config} 重新加载")
+        # 验证配置是否真的被加载了
+        logger.info(f"验证：当前使用的配置文件路径应该是 {args.config}")
+        logger.info(f"验证：base_model = {config.base_model}, batch_size = {config.batch_size}")
     
     # 条件导入改进模型（在config加载后）
     USE_IMPROVED_MODEL = False
@@ -334,9 +338,27 @@ def main() -> None:
         device = torch.device('cpu')
         logger.info(f"使用设备: {device} (CPU模式)")
     
-    # 创建输出目录
-    output_dir = Path(config.output_dir)
+    # 获取实验名称
+    experiment_name = config.experiment_name
+    
+    # 创建输出目录（根据实验名称区分）
+    base_output_dir = Path(config.output_dir)
+    output_dir = base_output_dir / experiment_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 统一重新初始化 logger，使用包含实验名称的日志目录
+    # 无论是否指定配置文件，都需要根据实验名称重新初始化 logger
+    base_log_dir = Path(config.log_dir)
+    log_dir = str(base_log_dir / experiment_name)
+    logger = setup_logger(
+        log_level=config.log_level,
+        log_file=config.log_file,
+        log_dir=log_dir
+    )
+    
+    logger.info(f"实验名称: {experiment_name}")
+    logger.info(f"Checkpoint保存目录: {output_dir}")
+    logger.info(f"日志保存目录: {Path(config.log_dir) / experiment_name}")
     
     # 保存配置
     config_dict = config.to_dict()
@@ -358,11 +380,13 @@ def main() -> None:
     # 初始化TensorBoard
     writer = None
     if config.use_tensorboard:
-        tensorboard_dir = Path(config.tensorboard_dir)
+        # 使用实验名称创建子目录，便于区分不同实验
+        base_tensorboard_dir = Path(config.tensorboard_dir)
+        tensorboard_dir = base_tensorboard_dir / experiment_name
         tensorboard_dir.mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(log_dir=tensorboard_dir)
         logger.info(f"TensorBoard日志目录: {tensorboard_dir}")
-        logger.info(f"启动TensorBoard: tensorboard --logdir {tensorboard_dir}")
+        logger.info(f"启动TensorBoard: tensorboard --logdir {base_tensorboard_dir}")
     
     # 初始化CheckpointManager
     checkpoint_manager = CheckpointManager(
@@ -396,11 +420,21 @@ def main() -> None:
     # 加载tokenizer（使用正确的base_model）
     logger.info(f"加载tokenizer: {base_model}")
     # 某些模型（如gte-multilingual）需要trust_remote_code=True
+    local_files_only = config.local_files_only
+    if local_files_only:
+        logger.info("✓ 仅使用本地模型文件，不连接 Hugging Face")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model, 
+            trust_remote_code=True,
+            local_files_only=local_files_only
+        )
     except Exception:
         # 如果失败，尝试不使用trust_remote_code
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            local_files_only=local_files_only
+        )
     
     # 加载数据集并计算归一化参数
     logger.info("加载数据集...")
@@ -517,14 +551,16 @@ def main() -> None:
                 freeze_base=checkpoint_config.get('freeze_base', config.freeze_base),
                 use_improved_pooling=checkpoint_config.get('use_improved_pooling', config.use_improved_pooling),
                 use_mlp_head=checkpoint_config.get('use_mlp_head', config.use_mlp_head),
-                mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size)
+                mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size),
+                local_files_only=config.local_files_only
             )
         else:
             logger.info("使用原始模型架构（从checkpoint恢复）")
             model = PersonalityPredictor(
                 base_model_name=checkpoint_config.get('base_model', base_model),
                 num_labels=checkpoint_config.get('num_labels', config.num_labels),
-                freeze_base=checkpoint_config.get('freeze_base', config.freeze_base)
+                freeze_base=checkpoint_config.get('freeze_base', config.freeze_base),
+                local_files_only=config.local_files_only
             )
     elif USE_IMPROVED_MODEL and ImprovedPersonalityPredictor is not None:
         logger.info("使用改进的模型架构")
@@ -534,13 +570,15 @@ def main() -> None:
             freeze_base=config.freeze_base,
             use_improved_pooling=config.use_improved_pooling,
             use_mlp_head=config.use_mlp_head,
-            mlp_hidden_size=config.mlp_hidden_size
+            mlp_hidden_size=config.mlp_hidden_size,
+            local_files_only=config.local_files_only
         )
     else:
         model = PersonalityPredictor(
             base_model_name=base_model,
             num_labels=config.num_labels,
-            freeze_base=config.freeze_base
+            freeze_base=config.freeze_base,
+            local_files_only=config.local_files_only
         )
     model.to(device)
     
@@ -561,14 +599,15 @@ def main() -> None:
         weight_decay=config.weight_decay
     )
     
-    # 计算总步数
-    total_steps = len(train_loader) * num_epochs
-    
-    scheduler = get_linear_schedule_with_warmup(
+    # 使用自适应学习率调度器（基于验证指标）
+    scheduler = ReduceLROnPlateau(
         optimizer,
-        num_warmup_steps=config.warmup_steps,
-        num_training_steps=total_steps
+        mode='max',  # 'max' 表示监控指标越大越好（Pearson相关系数）
+        factor=0.8,  # 学习率降低为原来的0.5倍
+        patience=3,  # 10个epoch没有改善就降低学习率
+        min_lr=1e-7  # 最小学习率
     )
+    logger.info("✓ 已启用自适应学习率调度器 (ReduceLROnPlateau)")
     
     # 混合精度训练（FP16）
     scaler = None
@@ -612,6 +651,15 @@ def main() -> None:
         
         logger.info(f"验证 - Loss: {val_loss:.4f}, "
                     f"Pearson: {val_metrics['pearson_mean']:.4f}")
+        
+        # 自适应学习率调度：基于验证指标调整学习率
+        scheduler.step(val_metrics['pearson_mean'])
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"当前学习率: {current_lr:.2e}")
+        
+        # 记录学习率到TensorBoard
+        if writer:
+            writer.add_scalar('Train/LearningRate', current_lr, epoch)
         
         # 判断是否为最佳模型
         is_best = val_metrics['pearson_mean'] > best_val_score

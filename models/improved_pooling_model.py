@@ -26,7 +26,8 @@ class ImprovedPersonalityPredictor(nn.Module):
         use_improved_pooling: bool = True,
         use_mlp_head: bool = True,
         mlp_hidden_size: int = 256,
-        separate_encoding: bool = False
+        separate_encoding: bool = False,
+        local_files_only: bool = False
     ):
         """
         Args:
@@ -38,6 +39,7 @@ class ImprovedPersonalityPredictor(nn.Module):
             use_mlp_head: 是否使用MLP回归头（否则使用单层线性）
             mlp_hidden_size: MLP隐藏层大小
             separate_encoding: 是否分别编码新闻和评论（需要修改数据加载器）
+            local_files_only: 是否只使用本地模型文件，不连接 Hugging Face
         """
         super(ImprovedPersonalityPredictor, self).__init__()
         
@@ -51,11 +53,13 @@ class ImprovedPersonalityPredictor(nn.Module):
         # 某些模型（如gte-multilingual）需要trust_remote_code=True
         self.base_model = AutoModel.from_pretrained(
             base_model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=local_files_only
         )
         config = AutoConfig.from_pretrained(
             base_model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=local_files_only
         )
         self.hidden_size = config.hidden_size
         

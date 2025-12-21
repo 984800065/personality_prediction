@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 class Config:
     """配置类，管理所有配置参数"""
     
-    def __init__(self, env_file: str = ".env"):
+    def __init__(self, env_file: str = ".env_original"):
         """
         初始化配置
         
@@ -21,7 +21,7 @@ class Config:
         # 加载.env文件
         env_path = Path(env_file)
         if env_path.exists():
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
         else:
             print(f"警告: {env_file} 文件不存在，使用默认值或环境变量")
     
@@ -50,6 +50,11 @@ class Config:
     @property
     def freeze_base(self) -> bool:
         return os.getenv("FREEZE_BASE", "False").lower() == "true"
+    
+    @property
+    def local_files_only(self) -> bool:
+        """是否只使用本地模型文件，不连接 Hugging Face"""
+        return os.getenv("LOCAL_FILES_ONLY", "False").lower() == "true"
     
     # ========== 模型改进配置 ==========
     @property
@@ -141,6 +146,11 @@ class Config:
     def tensorboard_dir(self) -> str:
         return os.getenv("TENSORBOARD_DIR", "./runs")
     
+    @property
+    def experiment_name(self) -> str:
+        """实验名称，用于区分不同实验的 TensorBoard 日志"""
+        return os.getenv("EXPERIMENT_NAME", "default")
+    
     # ========== Checkpoint配置 ==========
     @property
     def save_every_n_epochs(self) -> int:
@@ -197,6 +207,7 @@ class Config:
             "output_dir": self.output_dir,
             "log_dir": self.log_dir,
             "tensorboard_dir": self.tensorboard_dir,
+            "experiment_name": self.experiment_name,
             "save_every_n_epochs": self.save_every_n_epochs,
             "save_best_only": self.save_best_only,
             "max_checkpoints": self.max_checkpoints,

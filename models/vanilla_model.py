@@ -18,7 +18,8 @@ class PersonalityPredictor(nn.Module):
         base_model_name: str = "roberta-base",
         num_labels: int = 5,
         dropout: float = 0.1,
-        freeze_base: bool = False
+        freeze_base: bool = False,
+        local_files_only: bool = False
     ):
         """
         Args:
@@ -30,6 +31,7 @@ class PersonalityPredictor(nn.Module):
             num_labels: 输出标签数量（5个维度）
             dropout: dropout率
             freeze_base: 是否冻结基座模型参数
+            local_files_only: 是否只使用本地模型文件，不连接 Hugging Face
         """
         super(PersonalityPredictor, self).__init__()
         
@@ -40,11 +42,13 @@ class PersonalityPredictor(nn.Module):
         # 某些模型（如gte-multilingual）需要trust_remote_code=True
         self.base_model = AutoModel.from_pretrained(
             base_model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=local_files_only
         )
         config = AutoConfig.from_pretrained(
             base_model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=local_files_only
         )
         self.hidden_size = config.hidden_size
         
