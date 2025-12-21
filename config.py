@@ -77,6 +77,17 @@ class Config:
         """MLP隐藏层大小"""
         return int(os.getenv("MLP_HIDDEN_SIZE", "256"))
     
+    # ========== 多实例学习配置 ==========
+    @property
+    def aggregation_method(self) -> str:
+        """多实例聚合方法: 'attention', 'mean', 'max', 'transformer'"""
+        return os.getenv("AGGREGATION_METHOD", "attention")
+    
+    @property
+    def aggregation_hidden_size(self) -> int:
+        """聚合层的隐藏层大小"""
+        return int(os.getenv("AGGREGATION_HIDDEN_SIZE", "256"))
+    
     # ========== Late Fusion 元数据配置 ==========
     @property
     def use_gender(self) -> bool:
@@ -247,6 +258,9 @@ class Config:
             "use_race": self.use_race,
             "use_age": self.use_age,
             "use_income": self.use_income,
+            "use_multi_instance": True,  # 统一使用多实例学习
+            "aggregation_method": self.aggregation_method,
+            "aggregation_hidden_size": self.aggregation_hidden_size,
         }
 
 
