@@ -1,0 +1,25 @@
+================================================================================
+Speaker ID 一致性检查报告
+================================================================================
+
+数据文件: datasets/news_personality/train.tsv
+总样本数: 792
+唯一 speaker_id 数量: 59
+
+检查字段: gender, education, race, age, income, personality_conscientiousness, personality_openess, personality_extraversion, personality_agreeableness, personality_stability
+
+一致的 speaker_id 数量: 57
+不一致的 speaker_id 数量: 2
+
+================================================================================
+不一致的 Speaker ID 详情
+================================================================================
+
+
+Speaker ID: 26 (样本数: 9)
+不一致的字段: age (全部为NaN), income (全部为NaN), personality_conscientiousness (全部为NaN), personality_openess (全部为NaN), personality_extraversion (全部为NaN), personality_agreeableness (全部为NaN), personality_stability (全部为NaN)
+详细信息:
+
+Speaker ID: 31 (样本数: 4)
+不一致的字段: age (全部为NaN), income (全部为NaN), personality_conscientiousness (全部为NaN), personality_openess (全部为NaN), personality_extraversion (全部为NaN), personality_agreeableness (全部为NaN), personality_stability (全部为NaN)
+详细信息:

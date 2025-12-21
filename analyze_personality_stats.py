@@ -449,6 +449,209 @@ def analyze_demographic_features(
     return results
 
 
+def check_speaker_consistency(train_tsv_path: str = "datasets/news_personality/train.tsv"):
+    """
+    检查每个不同的 speaker_id 对应的 demographic 信息和大5人格值是否全部相同
+    
+    Args:
+        train_tsv_path: train.tsv文件路径
+    """
+    print(f"\n{'='*80}")
+    print("Speaker ID 一致性检查")
+    print(f"{'='*80}")
+    print(f"正在读取数据文件: {train_tsv_path}")
+    
+    df = pd.read_csv(train_tsv_path, sep='\t')
+    print(f"总样本数: {len(df)}")
+    
+    # 检查是否有 speaker_id 列
+    if 'speaker_id' not in df.columns:
+        print("❌ 错误: 数据文件中没有 'speaker_id' 列")
+        return
+    
+    # 需要检查的字段
+    demographic_fields = ['gender', 'education', 'race', 'age', 'income']
+    personality_fields = [
+        'personality_conscientiousness',
+        'personality_openess',
+        'personality_extraversion',
+        'personality_agreeableness',
+        'personality_stability'
+    ]
+    all_fields = demographic_fields + personality_fields
+    
+    # 检查字段是否存在
+    missing_fields = [field for field in all_fields if field not in df.columns]
+    if missing_fields:
+        print(f"❌ 警告: 以下字段不存在: {missing_fields}")
+        all_fields = [f for f in all_fields if f in df.columns]
+    
+    # 处理 unknown 值
+    df_processed = df.copy()
+    for field in all_fields:
+        if field in df_processed.columns:
+            if field in ['age', 'income'] + personality_fields:
+                # 数值型字段：将 unknown 替换为 NaN
+                df_processed[field] = df_processed[field].replace('unknown', pd.NA)
+                df_processed[field] = pd.to_numeric(df_processed[field], errors='coerce')
+            else:
+                # 分类型字段：保留 unknown 作为有效值
+                df_processed[field] = df_processed[field].replace('unknown', 'unknown')
+    
+    # 按 speaker_id 分组检查
+    print(f"\n按 speaker_id 分组检查一致性...")
+    print(f"检查字段: {', '.join(all_fields)}")
+    print(f"\n{'-'*80}")
+    
+    inconsistent_speakers = []
+    consistent_speakers = []
+    
+    unique_speakers = df_processed['speaker_id'].unique()
+    print(f"唯一 speaker_id 数量: {len(unique_speakers)}")
+    
+    for speaker_id in sorted(unique_speakers):
+        speaker_data = df_processed[df_processed['speaker_id'] == speaker_id]
+        
+        if len(speaker_data) == 0:
+            continue
+        
+        # 检查每个字段是否一致
+        inconsistent_fields = []
+        field_values = {}
+        
+        for field in all_fields:
+            if field not in speaker_data.columns:
+                continue
+            
+            field_values_for_speaker = speaker_data[field].dropna()
+            
+            # 如果所有值都是 NaN，跳过
+            if len(field_values_for_speaker) == 0:
+                inconsistent_fields.append(f"{field} (全部为NaN)")
+                continue
+            
+            # 检查是否有多个不同的值
+            unique_values = field_values_for_speaker.unique()
+            
+            if len(unique_values) > 1:
+                inconsistent_fields.append(field)
+                field_values[field] = {
+                    'unique_count': len(unique_values),
+                    'values': sorted([str(v) for v in unique_values])
+                }
+            else:
+                field_values[field] = {
+                    'unique_count': 1,
+                    'value': str(unique_values[0])
+                }
+        
+        if inconsistent_fields:
+            inconsistent_speakers.append({
+                'speaker_id': speaker_id,
+                'sample_count': len(speaker_data),
+                'inconsistent_fields': inconsistent_fields,
+                'field_values': field_values
+            })
+        else:
+            consistent_speakers.append({
+                'speaker_id': speaker_id,
+                'sample_count': len(speaker_data)
+            })
+    
+    # 输出结果
+    print(f"\n{'='*80}")
+    print("检查结果汇总")
+    print(f"{'='*80}")
+    print(f"✅ 一致的 speaker_id 数量: {len(consistent_speakers)}")
+    print(f"❌ 不一致的 speaker_id 数量: {len(inconsistent_speakers)}")
+    
+    if len(inconsistent_speakers) > 0:
+        print(f"\n{'='*80}")
+        print("不一致的 Speaker ID 详情")
+        print(f"{'='*80}")
+        
+        for item in inconsistent_speakers:
+            speaker_id = item['speaker_id']
+            sample_count = item['sample_count']
+            inconsistent_fields = item['inconsistent_fields']
+            field_values = item['field_values']
+            
+            print(f"\n📌 Speaker ID: {speaker_id} (样本数: {sample_count})")
+            print(f"   不一致的字段: {', '.join(inconsistent_fields)}")
+            print(f"   详细信息:")
+            
+            for field in inconsistent_fields:
+                if field in field_values:
+                    info = field_values[field]
+                    if info['unique_count'] > 1:
+                        print(f"     - {field}: {info['unique_count']} 个不同值")
+                        print(f"       值: {', '.join(info['values'][:10])}" + 
+                              (f" ... (共{len(info['values'])}个)" if len(info['values']) > 10 else ""))
+    else:
+        print(f"\n✅ 所有 speaker_id 的 demographic 信息和人格值都完全一致！")
+    
+    # 统计信息
+    if len(consistent_speakers) > 0:
+        consistent_sample_counts = [item['sample_count'] for item in consistent_speakers]
+        print(f"\n{'='*80}")
+        print("一致的 Speaker ID 统计")
+        print(f"{'='*80}")
+        print(f"   样本数范围: {min(consistent_sample_counts)} - {max(consistent_sample_counts)}")
+        print(f"   平均样本数: {np.mean(consistent_sample_counts):.2f}")
+        print(f"   中位数样本数: {np.median(consistent_sample_counts):.2f}")
+    
+    # 保存结果到文件
+    output_file = "speaker_consistency_check.txt"
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write("="*80 + "\n")
+        f.write("Speaker ID 一致性检查报告\n")
+        f.write("="*80 + "\n\n")
+        f.write(f"数据文件: {train_tsv_path}\n")
+        f.write(f"总样本数: {len(df)}\n")
+        f.write(f"唯一 speaker_id 数量: {len(unique_speakers)}\n\n")
+        
+        f.write(f"检查字段: {', '.join(all_fields)}\n\n")
+        
+        f.write(f"一致的 speaker_id 数量: {len(consistent_speakers)}\n")
+        f.write(f"不一致的 speaker_id 数量: {len(inconsistent_speakers)}\n\n")
+        
+        if len(inconsistent_speakers) > 0:
+            f.write("="*80 + "\n")
+            f.write("不一致的 Speaker ID 详情\n")
+            f.write("="*80 + "\n\n")
+            
+            for item in inconsistent_speakers:
+                speaker_id = item['speaker_id']
+                sample_count = item['sample_count']
+                inconsistent_fields = item['inconsistent_fields']
+                field_values = item['field_values']
+                
+                f.write(f"\nSpeaker ID: {speaker_id} (样本数: {sample_count})\n")
+                f.write(f"不一致的字段: {', '.join(inconsistent_fields)}\n")
+                f.write(f"详细信息:\n")
+                
+                for field in inconsistent_fields:
+                    if field in field_values:
+                        info = field_values[field]
+                        if info['unique_count'] > 1:
+                            f.write(f"  - {field}: {info['unique_count']} 个不同值\n")
+                            f.write(f"    值: {', '.join(info['values'])}\n")
+        else:
+            f.write("\n✅ 所有 speaker_id 的 demographic 信息和人格值都完全一致！\n")
+    
+    print(f"\n{'='*80}")
+    print(f"✅ Speaker ID 一致性检查完成！")
+    print(f"📄 详细结果已保存到: {output_file}")
+    print(f"{'='*80}")
+    
+    return {
+        'consistent_count': len(consistent_speakers),
+        'inconsistent_count': len(inconsistent_speakers),
+        'inconsistent_speakers': inconsistent_speakers,
+        'consistent_speakers': consistent_speakers
+    }
+
+
 if __name__ == '__main__':
     import argparse
     
@@ -458,6 +661,8 @@ if __name__ == '__main__':
                        help='train.tsv文件路径')
     parser.add_argument('--no-demographic', action='store_true',
                        help='跳过人口统计学特征分析')
+    parser.add_argument('--no-speaker-check', action='store_true',
+                       help='跳过 speaker_id 一致性检查')
     
     args = parser.parse_args()
     
@@ -467,4 +672,8 @@ if __name__ == '__main__':
     # 分析人口统计学特征（默认启用）
     if not args.no_demographic:
         demographic_stats = analyze_demographic_features(args.train_file)
+    
+    # 检查 speaker_id 一致性（默认启用）
+    if not args.no_speaker_check:
+        speaker_consistency = check_speaker_consistency(args.train_file)
 
