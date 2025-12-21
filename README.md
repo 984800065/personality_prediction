@@ -33,7 +33,7 @@ cp .env.example .env
 2. 编辑`.env`文件，修改你需要的参数：
 ```bash
 # 模型配置
-BASE_MODEL=Alibaba-NLP/gte-multilingual-base
+BASE_MODEL=roberta-base
 BATCH_SIZE=4
 LEARNING_RATE=2e-5
 NUM_EPOCHS=5
@@ -91,7 +91,7 @@ python train.py
 # 使用优化配置（节省显存），但是用（gte），per_R: 0.4071
 
 # 切换基座embedding模型为roberta-base
-python train.py --base_model roberta-base --batch_size 32 --learning_rate 2e-5 --num_epochs 20
+python train.py --base_model roberta-base --batch_size 32 --learning_rate 2e-5 --num_epochs 30
 ```
 
 **注意**: 显存优化配置（FP16、梯度检查点等）需要在`.env`文件中设置。
@@ -114,7 +114,7 @@ python train.py --resume_from ./checkpoints/checkpoints/checkpoint_epoch_3.pt
 python train.py --resume_from ./checkpoints/best_model.pt
 
 # 恢复训练时可以覆盖配置参数（继续之前训练到2个epoch）
-python train.py --resume_from ./checkpoints/best_model.pt --num_epochs 30
+python train.py --resume_from ./checkpoints/best_model.pt --num_epochs 50
 ```
 
 **注意**：
@@ -157,17 +157,17 @@ Checkpoint包含：
 ### 测试/预测
 
 ```bash
-python test.py \
-    --checkpoint ./checkpoints/best_model.pt \
-    --test_file datasets/news_personality/test.tsv \
-    --articles_file datasets/news_personality/articles.csv \
-    --output_file predictions.tsv
+python test.py
+
+python test.py     --checkpoint ./checkpoints/checkpoints/checkpoint_epoch_30.pt     --test_file datasets/news_personality/test.tsv     --articles_file datasets/news_personality/articles.csv     --output_file predictions.tsv
+
+python test_for_bert_base_personality.py --test_file datasets/news_personality/test.tsv     --articles_file datasets/news_personality/articles.csv     --output_file predictions.tsv
 ```
 
 ## 支持的基座模型
 
-- `Alibaba-NLP/gte-multilingual-base`（默认，推荐）
-- `roberta-base`
+- `roberta-base`（默认）
+- `Alibaba-NLP/gte-multilingual-base`
 - `bert-base-uncased`
 - `microsoft/deberta-base`
 - `distilbert-base-uncased`
@@ -219,17 +219,17 @@ python test.py \
 
 ## 示例
 
-### 使用默认模型训练（gte-multilingual-base）
+### 使用默认模型训练（roberta-base）
 
 ```bash
 python train.py
 ```
 
-### 使用RoBERTa训练
+### 使用GTE-Multilingual训练
 
 修改`.env`文件：
 ```bash
-BASE_MODEL=roberta-base
+BASE_MODEL=Alibaba-NLP/gte-multilingual-base
 ```
 
 然后运行：

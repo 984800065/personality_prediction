@@ -21,6 +21,7 @@ from models.vanilla_model import PersonalityPredictor
 from utils import set_seed, compute_metrics
 from config import config
 from logger_config import setup_logger
+from label_normalizer import LabelNormalizer
 
 # 设置logger
 logger = setup_logger(
@@ -54,7 +55,8 @@ class CheckpointManager:
         val_score: float,
         is_best: bool = False,
         config_dict: Optional[Dict[str, Any]] = None,
-        global_step: int = 0
+        global_step: int = 0,
+        normalizer: Optional[LabelNormalizer] = None
     ) -> None:
         """
         保存checkpoint
@@ -69,13 +71,20 @@ class CheckpointManager:
             config_dict: 配置字典
             global_step: 全局步数
         """
+        # 准备config字典
+        final_config = config_dict.copy() if config_dict else {}
+        
+        # 添加normalizer信息到config
+        if normalizer is not None:
+            final_config['normalizer'] = normalizer.to_dict()
+        
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'val_score': val_score,
-            'config': config_dict or {},
+            'config': final_config,
             'global_step': global_step
         }
         
@@ -293,6 +302,8 @@ def main() -> None:
         except ImportError as e:
             logger.warning(f"无法导入改进模型: {e}，使用原始模型")
             USE_IMPROVED_MODEL = False
+            
+    logger.info(f"使用的模型架构为: {'改进模型' if USE_IMPROVED_MODEL else '原始模型'}")
     
     # 命令行参数覆盖配置
     base_model = args.base_model or config.base_model
@@ -391,14 +402,38 @@ def main() -> None:
         # 如果失败，尝试不使用trust_remote_code
         tokenizer = AutoTokenizer.from_pretrained(base_model)
     
-    # 加载数据集
+    # 加载数据集并计算归一化参数
     logger.info("加载数据集...")
+    
+    # 如果从checkpoint恢复，尝试加载normalizer
+    normalizer = None
+    if checkpoint_config and 'normalizer' in checkpoint_config:
+        logger.info("从checkpoint加载归一化参数...")
+        normalizer = LabelNormalizer.from_dict(checkpoint_config['normalizer'])
+    else:
+        # 先创建一个临时数据集来计算normalizer（不归一化）
+        temp_dataset = PersonalityDataset(
+            train_tsv_path=config.train_file,
+            articles_csv_path=config.articles_file,
+            tokenizer=tokenizer,
+            max_length=config.max_length,
+            is_training=True,
+            normalizer=None  # 不归一化，用于计算min/max
+        )
+        
+        # 从训练数据计算normalizer
+        logger.info("计算标签归一化参数...")
+        normalizer = LabelNormalizer()
+        normalizer.fit(temp_dataset.labels)
+    
+    # 使用normalizer创建实际的数据集（标签会被归一化）
     full_dataset = PersonalityDataset(
         train_tsv_path=config.train_file,
         articles_csv_path=config.articles_file,
         tokenizer=tokenizer,
         max_length=config.max_length,
-        is_training=True
+        is_training=True,
+        normalizer=normalizer
     )
     
     # 划分训练集和验证集
@@ -595,7 +630,8 @@ def main() -> None:
                 val_score=val_metrics['pearson_mean'],
                 is_best=is_best,
                 config_dict=config_dict,
-                global_step=global_step
+                global_step=global_step,
+                normalizer=normalizer
             )
     
     # 关闭TensorBoard writer

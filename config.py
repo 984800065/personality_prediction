@@ -41,7 +41,7 @@ class Config:
     # ========== 模型配置 ==========
     @property
     def base_model(self) -> str:
-        return os.getenv("BASE_MODEL", "Alibaba-NLP/gte-multilingual-base")
+        return os.getenv("BASE_MODEL", "roberta-base")
     
     @property
     def num_labels(self) -> int:

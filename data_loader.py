@@ -3,6 +3,7 @@
 """
 import pandas as pd
 import torch
+import numpy as np
 from torch.utils.data import Dataset
 from typing import Dict, List, Optional
 import os
@@ -18,7 +19,8 @@ class PersonalityDataset(Dataset):
         articles_csv_path: str,
         tokenizer,
         max_length: int = 512,
-        is_training: bool = True
+        is_training: bool = True,
+        normalizer = None  # LabelNormalizer实例，用于归一化标签
     ):
         """
         Args:
@@ -27,10 +29,12 @@ class PersonalityDataset(Dataset):
             tokenizer: tokenizer对象
             max_length: 最大序列长度
             is_training: 是否为训练模式（训练模式包含标签）
+            normalizer: LabelNormalizer实例，用于归一化标签（训练时使用）
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.is_training = is_training
+        self.normalizer = normalizer
         
         # 加载数据
         self.data = pd.read_csv(train_tsv_path, sep='\t')
@@ -69,6 +73,11 @@ class PersonalityDataset(Dataset):
             # 转换为numpy数组
             self.labels = label_df.values.astype(float)
             
+            # 如果提供了normalizer，对标签进行归一化
+            if self.normalizer is not None:
+                self.labels = self.normalizer.normalize(self.labels)
+                logger.info("标签已归一化到[0, 1]范围")
+            
             removed_count = (~valid_mask).sum()
             if removed_count > 0:
                 logger.warning(f"过滤掉了 {removed_count} 个包含 'unknown' 标签的样本，剩余 {len(self.data)} 个有效样本")
@@ -103,6 +112,8 @@ class PersonalityDataset(Dataset):
         result = {
             'input_ids': encoding['input_ids'],
             'attention_mask': encoding['attention_mask'],
+            "article_text": article_text,
+            "comment": comment,
         }
         
         # 添加标签（如果是训练模式）
