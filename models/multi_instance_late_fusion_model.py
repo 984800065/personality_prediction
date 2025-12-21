@@ -5,9 +5,10 @@ Multi-Instance Late Fusion 架构模型
 """
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoConfig
 from typing import Optional, Dict, List
 import math
+from models.metadata_encoder import MetadataEncoder
+from models.base_model_loader import load_base_model
 
 
 class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
@@ -23,8 +24,8 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         num_labels: int = 5,
         dropout: float = 0.1,
         freeze_base: bool = False,
-        use_improved_pooling: bool = True,
-        use_mlp_head: bool = True,
+        use_improved_pooling: bool = False,  # 聚合模式默认不使用改进池化
+        use_mlp_head: bool = True,  # 聚合模式默认使用MLP回归头
         mlp_hidden_size: int = 256,
         local_files_only: bool = False,
         # 元数据字段启用/禁用
@@ -81,22 +82,12 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         self.use_age = use_age
         self.use_income = use_income
         
-        # 加载基座模型
-        self.base_model = AutoModel.from_pretrained(
-            base_model_name,
-            trust_remote_code=True,
+        # 加载基座模型（使用统一的加载函数）
+        self.base_model, self.hidden_size = load_base_model(
+            base_model_name=base_model_name,
+            freeze_base=freeze_base,
             local_files_only=local_files_only
         )
-        config = AutoConfig.from_pretrained(
-            base_model_name,
-            trust_remote_code=True,
-            local_files_only=local_files_only
-        )
-        self.hidden_size = config.hidden_size
-        
-        if freeze_base:
-            for param in self.base_model.parameters():
-                param.requires_grad = False
         
         self.dropout = nn.Dropout(dropout)
         
@@ -132,66 +123,19 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
             # mean 或 max 聚合，不需要额外参数
             aggregated_text_feature_dim = text_feature_dim
         
-        # ========== 元数据编码层 ==========
-        metadata_feature_dim = 0
-        
-        # 性别编码（分类，1-2）
-        if use_gender:
-            self.gender_embedding = nn.Embedding(
-                num_embeddings=3,  # 0: unknown, 1: male, 2: female
-                embedding_dim=gender_embed_dim
-            )
-            metadata_feature_dim += gender_embed_dim
-        else:
-            self.gender_embedding = None
-        
-        # 教育程度编码（分类，2-7）
-        if use_education:
-            self.education_embedding = nn.Embedding(
-                num_embeddings=8,  # 0: unknown, 1-7: education levels
-                embedding_dim=education_embed_dim
-            )
-            metadata_feature_dim += education_embed_dim
-        else:
-            self.education_embedding = None
-        
-        # 种族编码（分类，1-6）
-        if use_race:
-            self.race_embedding = nn.Embedding(
-                num_embeddings=7,  # 0: unknown, 1-6: race categories
-                embedding_dim=race_embed_dim
-            )
-            metadata_feature_dim += race_embed_dim
-        else:
-            self.race_embedding = None
-        
-        # 年龄编码（数值，归一化后通过MLP）
-        if use_age:
-            self.age_mlp = nn.Sequential(
-                nn.Linear(1, age_norm_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(age_norm_dim, age_norm_dim)
-            )
-            metadata_feature_dim += age_norm_dim
-        else:
-            self.age_mlp = None
-        
-        # 收入编码（数值，归一化后通过MLP）
-        if use_income:
-            self.income_mlp = nn.Sequential(
-                nn.Linear(1, income_norm_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(income_norm_dim, income_norm_dim)
-            )
-            metadata_feature_dim += income_norm_dim
-        else:
-            self.income_mlp = None
+        # ========== 元数据编码器（默认全部使用）==========
+        self.metadata_encoder = MetadataEncoder(
+            gender_embed_dim=gender_embed_dim,
+            education_embed_dim=education_embed_dim,
+            race_embed_dim=race_embed_dim,
+            age_norm_dim=age_norm_dim,
+            income_norm_dim=income_norm_dim,
+            dropout=dropout
+        )
         
         # ========== 融合层 ==========
         # 聚合后的文本特征 + 元数据特征的总维度
-        fused_feature_dim = aggregated_text_feature_dim + metadata_feature_dim
+        fused_feature_dim = aggregated_text_feature_dim + self.metadata_encoder.feature_dim
         
         # 回归头
         if use_mlp_head:
@@ -211,8 +155,11 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """初始化权重"""
+        """初始化权重（仅回归头和聚合层，元数据编码器有自己的初始化）"""
         for module in self.modules():
+            # 跳过元数据编码器的模块（它有自己的初始化）
+            if hasattr(module, '__class__') and 'MetadataEncoder' in str(module.__class__):
+                continue
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
@@ -332,66 +279,6 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         
         return aggregated
     
-    def _encode_metadata(
-        self,
-        gender: Optional[torch.Tensor] = None,
-        education: Optional[torch.Tensor] = None,
-        race: Optional[torch.Tensor] = None,
-        age: Optional[torch.Tensor] = None,
-        income: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        编码元数据特征（与 LateFusionPersonalityPredictor 相同）
-        
-        Args:
-            gender: [batch_size] 或 None
-            education: [batch_size] 或 None
-            race: [batch_size] 或 None
-            age: [batch_size] 或 None (已归一化)
-            income: [batch_size] 或 None (已归一化)
-        
-        Returns:
-            metadata_features: [batch_size, metadata_feature_dim]
-        """
-        metadata_features = []
-        
-        if self.use_gender and gender is not None:
-            gender_idx = gender.long().clamp(0, 2)
-            gender_emb = self.gender_embedding(gender_idx)
-            metadata_features.append(gender_emb)
-        
-        if self.use_education and education is not None:
-            education_idx = education.long().clamp(0, 7)
-            education_emb = self.education_embedding(education_idx)
-            metadata_features.append(education_emb)
-        
-        if self.use_race and race is not None:
-            race_idx = race.long().clamp(0, 6)
-            race_emb = self.race_embedding(race_idx)
-            metadata_features.append(race_emb)
-        
-        if self.use_age and age is not None:
-            age_input = age.unsqueeze(-1)  # [batch_size, 1]
-            age_feat = self.age_mlp(age_input)
-            metadata_features.append(age_feat)
-        
-        if self.use_income and income is not None:
-            income_input = income.unsqueeze(-1)  # [batch_size, 1]
-            income_feat = self.income_mlp(income_input)
-            metadata_features.append(income_feat)
-        
-        if len(metadata_features) == 0:
-            batch_size = gender.size(0) if gender is not None else (
-                education.size(0) if education is not None else (
-                    race.size(0) if race is not None else (
-                        age.size(0) if age is not None else income.size(0)
-                    )
-                )
-            )
-            return torch.zeros(batch_size, 0, device=next(self.parameters()).device)
-        
-        return torch.cat(metadata_features, dim=1)
-    
     def forward(
         self,
         # 多实例输入：每个 speaker 的多个评论
@@ -490,8 +377,8 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         # Stack: [batch_size, aggregated_text_feature_dim]
         aggregated_text_features = torch.stack(aggregated_text_features, dim=0)
         
-        # 编码元数据特征
-        metadata_features = self._encode_metadata(
+        # 编码元数据特征（使用统一的编码器）
+        metadata_features = self.metadata_encoder(
             gender=gender,
             education=education,
             race=race,

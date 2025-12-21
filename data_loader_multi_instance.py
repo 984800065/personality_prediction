@@ -32,7 +32,8 @@ class MultiInstancePersonalityDataset(Dataset):
         use_race: bool = True,
         use_age: bool = True,
         use_income: bool = True,
-        metadata_normalizer: Optional = None  # 用于归一化 age 和 income
+        metadata_normalizer: Optional = None,  # 用于归一化 age 和 income
+        include_article: bool = False  # 是否在tokenizer输入中包含新闻文本
     ):
         """
         Args:
@@ -61,16 +62,22 @@ class MultiInstancePersonalityDataset(Dataset):
         self.use_age = use_age
         self.use_income = use_income
         self.metadata_normalizer = metadata_normalizer
+        self.include_article = include_article
         
         # 加载数据
         self.data = pd.read_csv(train_tsv_path, sep='\t')
-        self.articles = pd.read_csv(articles_csv_path)
         
-        # 创建article_id到text的映射
-        self.article_dict = dict(zip(
-            self.articles['article_id'],
-            self.articles['text']
-        ))
+        # 只有在需要包含新闻时才加载articles
+        if self.include_article:
+            self.articles = pd.read_csv(articles_csv_path)
+            # 创建article_id到text的映射
+            self.article_dict = dict(zip(
+                self.articles['article_id'],
+                self.articles['text']
+            ))
+        else:
+            self.articles = None
+            self.article_dict = {}
         
         # 检查是否有 speaker_id 列
         if 'speaker_id' not in self.data.columns:
@@ -244,21 +251,30 @@ class MultiInstancePersonalityDataset(Dataset):
         attention_mask_list = []
         
         for _, row in speaker_df.iterrows():
-            article_id = row['article_id']
             comment = str(row['comment'])
             
-            # 获取对应的新闻文本
-            article_text = self.article_dict.get(article_id, "")
-            
-            # 使用tokenizer处理文本对
-            encoding = self.tokenizer(
-                article_text,
-                comment,
-                truncation=True,
-                padding='max_length',
-                max_length=self.max_length,
-                return_tensors='pt'
-            )
+            # 根据配置决定是否包含新闻文本
+            if self.include_article:
+                article_id = row['article_id']
+                article_text = self.article_dict.get(article_id, "")
+                # 使用tokenizer处理文本对（新闻 + 评论）
+                encoding = self.tokenizer(
+                    article_text,
+                    comment,
+                    truncation=True,
+                    padding='max_length',
+                    max_length=self.max_length,
+                    return_tensors='pt'
+                )
+            else:
+                # 只使用评论
+                encoding = self.tokenizer(
+                    comment,
+                    truncation=True,
+                    padding='max_length',
+                    max_length=self.max_length,
+                    return_tensors='pt'
+                )
             
             # 移除batch维度
             input_ids_list.append(encoding['input_ids'].squeeze(0))

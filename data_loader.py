@@ -101,7 +101,8 @@ class PersonalityDataset(Dataset):
         use_race: bool = True,
         use_age: bool = True,
         use_income: bool = True,
-        metadata_normalizer: Optional[MetadataNormalizer] = None  # 用于归一化 age 和 income
+        metadata_normalizer: Optional[MetadataNormalizer] = None,  # 用于归一化 age 和 income
+        include_article: bool = False  # 是否在tokenizer输入中包含新闻文本
     ):
         """
         Args:
@@ -130,16 +131,22 @@ class PersonalityDataset(Dataset):
         self.use_age = use_age
         self.use_income = use_income
         self.metadata_normalizer = metadata_normalizer
+        self.include_article = include_article
         
         # 加载数据
         self.data = pd.read_csv(train_tsv_path, sep='\t')
-        self.articles = pd.read_csv(articles_csv_path)
         
-        # 创建article_id到text的映射
-        self.article_dict = dict(zip(
-            self.articles['article_id'],
-            self.articles['text']
-        ))
+        # 只有在需要包含新闻时才加载articles
+        if self.include_article:
+            self.articles = pd.read_csv(articles_csv_path)
+            # 创建article_id到text的映射
+            self.article_dict = dict(zip(
+                self.articles['article_id'],
+                self.articles['text']
+            ))
+        else:
+            self.articles = None
+            self.article_dict = {}
         
         # 如果是训练模式，提取标签
         if self.is_training:
@@ -287,22 +294,30 @@ class PersonalityDataset(Dataset):
     
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-        article_id = row['article_id']
         comment = str(row['comment'])
         
-        # 获取对应的新闻文本
-        article_text = self.article_dict.get(article_id, "")
-        
-        # 使用tokenizer的encode_plus方法处理文本对
-        # 这样会自动添加特殊token（如[SEP]或</s>）
-        encoding = self.tokenizer(
-            article_text,
-            comment,
-            truncation=True,
-            padding='max_length',
-            max_length=self.max_length,
-            return_tensors='pt'
-        )
+        article_id = row['article_id']
+        # 根据配置决定是否包含新闻文本
+        if self.include_article:
+            article_text = self.article_dict.get(article_id, "")
+            # 使用tokenizer处理文本对（新闻 + 评论）
+            encoding = self.tokenizer(
+                article_text,
+                comment,
+                truncation=True,
+                padding='max_length',
+                max_length=self.max_length,
+                return_tensors='pt'
+            )
+        else:
+            # 只使用评论
+            encoding = self.tokenizer(
+                comment,
+                truncation=True,
+                padding='max_length',
+                max_length=self.max_length,
+                return_tensors='pt'
+            )
         
         # 移除batch维度（DataLoader会添加）
         encoding = {k: v.squeeze(0) for k, v in encoding.items()}
@@ -310,8 +325,6 @@ class PersonalityDataset(Dataset):
         result = {
             'input_ids': encoding['input_ids'],
             'attention_mask': encoding['attention_mask'],
-            "article_text": article_text,
-            "comment": comment,
         }
         
         # 添加元数据（如果启用）

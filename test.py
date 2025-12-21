@@ -11,12 +11,13 @@ from transformers import AutoTokenizer
 from tqdm.auto import tqdm
 
 from data_loader_multi_instance import MultiInstancePersonalityDataset, collate_fn_multi_instance
-from data_loader import MetadataNormalizer
+from data_loader import PersonalityDataset, collate_fn, MetadataNormalizer
 from utils import set_seed
 from config import config
 from logger_config import setup_logger
 from label_normalizer import LabelNormalizer
 from train import validate
+from model_factory import create_model
 
 # 设置logger
 logger = setup_logger(
@@ -25,47 +26,48 @@ logger = setup_logger(
     log_dir=config.log_dir
 )
 
-# 导入多实例学习模型
-try:
-    from models.multi_instance_late_fusion_model import MultiInstanceLateFusionPersonalityPredictor
-except ImportError as e:
-    logger.error(f"无法导入 Multi-Instance Late Fusion 模型: {e}")
-    raise
 
-
-def predict(model, dataloader, device):
+def predict(model, dataloader, device, is_multi_instance=False):
     """进行预测"""
     model.eval()
     all_predictions = []
-    all_speaker_ids = []
+    all_ids = []
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="预测中"):
-            # 多实例模式
-            input_ids_list = batch['input_ids_list']
-            attention_mask_list = batch['attention_mask_list']
-            comment_mask = batch.get('comment_mask', None)
+            # 根据batch格式判断模式
+            if 'input_ids_list' in batch:
+                # 聚合模式（多实例学习）
+                input_ids_list = batch['input_ids_list']
+                attention_mask_list = batch['attention_mask_list']
+                comment_mask = batch.get('comment_mask', None)
+                
+                processed_input_ids_list = []
+                processed_attention_mask_list = []
+                for ids_list, mask_list in zip(input_ids_list, attention_mask_list):
+                    ids_tensor = torch.stack([ids.to(device) for ids in ids_list])
+                    mask_tensor = torch.stack([mask.to(device) for mask in mask_list])
+                    processed_input_ids_list.append(ids_tensor)
+                    processed_attention_mask_list.append(mask_tensor)
+                
+                if comment_mask is not None:
+                    comment_mask = comment_mask.to(device)
+                
+                model_kwargs = {
+                    'input_ids_list': processed_input_ids_list,
+                    'attention_mask_list': processed_attention_mask_list,
+                    'comment_mask': comment_mask
+                }
+                all_ids.extend(batch.get('speaker_ids', []))
+            else:
+                # 原始模型模式
+                model_kwargs = {
+                    'input_ids': batch['input_ids'].to(device),
+                    'attention_mask': batch['attention_mask'].to(device)
+                }
+                all_ids.extend(batch.get('comment_ids', []))
             
-            # 将每个 speaker 的评论列表移动到设备并堆叠成张量
-            processed_input_ids_list = []
-            processed_attention_mask_list = []
-            for ids_list, mask_list in zip(input_ids_list, attention_mask_list):
-                # 堆叠每个 speaker 的所有评论
-                ids_tensor = torch.stack([ids.to(device) for ids in ids_list])  # [num_comments, max_length]
-                mask_tensor = torch.stack([mask.to(device) for mask in mask_list])  # [num_comments, max_length]
-                processed_input_ids_list.append(ids_tensor)
-                processed_attention_mask_list.append(mask_tensor)
-            
-            if comment_mask is not None:
-                comment_mask = comment_mask.to(device)
-            
-            model_kwargs = {
-                'input_ids_list': processed_input_ids_list,
-                'attention_mask_list': processed_attention_mask_list,
-                'comment_mask': comment_mask
-            }
-            
-            # 准备元数据（如果存在）
+            # 准备元数据（默认全部使用）
             if 'gender' in batch:
                 model_kwargs['gender'] = batch['gender'].to(device)
             if 'education' in batch:
@@ -81,11 +83,10 @@ def predict(model, dataloader, device):
             
             logits = outputs['logits']
             all_predictions.append(logits.cpu().numpy())
-            all_speaker_ids.extend(batch.get('speaker_ids', []))
     
     all_predictions = np.concatenate(all_predictions, axis=0)
     
-    return all_predictions, all_speaker_ids
+    return all_predictions, all_ids
 
 
 def main():
@@ -161,57 +162,62 @@ def main():
             local_files_only=local_files_only
         )
     
-    # 创建模型（统一使用多实例模型）
+    # 创建模型（使用统一的工厂函数）
     logger.info("创建模型...")
     
-    if MultiInstanceLateFusionPersonalityPredictor is None:
-        logger.error("Multi-Instance Late Fusion 模型未导入，无法创建模型")
-        raise RuntimeError("Multi-Instance Late Fusion 模型未导入")
+    # 从checkpoint或配置中获取模式
+    use_multi_instance = checkpoint_config.get('use_multi_instance', config.use_multi_instance) if checkpoint_config else config.use_multi_instance
     
-    logger.info("使用 Multi-Instance Late Fusion 模型架构")
-    model = MultiInstanceLateFusionPersonalityPredictor(
+    model = create_model(
         base_model_name=base_model,
         num_labels=5,
-        use_improved_pooling=checkpoint_config.get('use_improved_pooling', config.use_improved_pooling) if checkpoint_config else config.use_improved_pooling,
-        use_mlp_head=checkpoint_config.get('use_mlp_head', config.use_mlp_head) if checkpoint_config else config.use_mlp_head,
-        mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size) if checkpoint_config else config.mlp_hidden_size,
-        local_files_only=config.local_files_only,
-        use_gender=checkpoint_config.get('use_gender', config.use_gender) if checkpoint_config else config.use_gender,
-        use_education=checkpoint_config.get('use_education', config.use_education) if checkpoint_config else config.use_education,
-        use_race=checkpoint_config.get('use_race', config.use_race) if checkpoint_config else config.use_race,
-        use_age=checkpoint_config.get('use_age', config.use_age) if checkpoint_config else config.use_age,
-        use_income=checkpoint_config.get('use_income', config.use_income) if checkpoint_config else config.use_income,
-        aggregation_method=checkpoint_config.get('aggregation_method', config.aggregation_method) if checkpoint_config else config.aggregation_method,
-        aggregation_hidden_size=checkpoint_config.get('aggregation_hidden_size', config.aggregation_hidden_size) if checkpoint_config else config.aggregation_hidden_size
+        use_multi_instance=use_multi_instance,
+        checkpoint_config=checkpoint_config,
+        config=config,
+        device=device
     )
     
     # 加载权重
     model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
     model.eval()
     
-    # 获取元数据配置（从checkpoint或当前config）
-    use_gender = checkpoint_config.get('use_gender', config.use_gender) if checkpoint_config else config.use_gender
-    use_education = checkpoint_config.get('use_education', config.use_education) if checkpoint_config else config.use_education
-    use_race = checkpoint_config.get('use_race', config.use_race) if checkpoint_config else config.use_race
-    use_age = checkpoint_config.get('use_age', config.use_age) if checkpoint_config else config.use_age
-    use_income = checkpoint_config.get('use_income', config.use_income) if checkpoint_config else config.use_income
-    
-    # 使用多实例学习模式
-    full_dataset = MultiInstancePersonalityDataset(
-        train_tsv_path=config.train_file,
-        articles_csv_path=config.articles_file,
-        tokenizer=tokenizer,
-        max_length=config.max_length,
-        is_training=True,
-        normalizer=normalizer,
-        use_gender=use_gender,
-        use_education=use_education,
-        use_race=use_race,
-        use_age=use_age,
-        use_income=use_income,
-        metadata_normalizer=metadata_normalizer
-    )
+    # 根据模式选择数据集
+    if use_multi_instance:
+        # 聚合模式
+        full_dataset = MultiInstancePersonalityDataset(
+            train_tsv_path=config.train_file,
+            articles_csv_path=config.articles_file,
+            tokenizer=tokenizer,
+            max_length=config.max_length,
+            is_training=True,
+            normalizer=normalizer,
+            use_gender=True,  # 默认全部使用
+            use_education=True,
+            use_race=True,
+            use_age=True,
+            use_income=True,
+            metadata_normalizer=metadata_normalizer,
+            include_article=config.include_article
+        )
+        collate_fn_to_use = collate_fn_multi_instance
+    else:
+        # 原始模型模式
+        full_dataset = PersonalityDataset(
+            train_tsv_path=config.train_file,
+            articles_csv_path=config.articles_file,
+            tokenizer=tokenizer,
+            max_length=config.max_length,
+            is_training=True,
+            normalizer=normalizer,
+            use_gender=True,  # 默认全部使用
+            use_education=True,
+            use_race=True,
+            use_age=True,
+            use_income=True,
+            metadata_normalizer=metadata_normalizer,
+            include_article=config.include_article
+        )
+        collate_fn_to_use = collate_fn
     
     # 划分训练集和验证集
     val_size = int(len(full_dataset) * config.val_split)
@@ -225,13 +231,13 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn_multi_instance
+        collate_fn=collate_fn_to_use
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn_multi_instance
+        collate_fn=collate_fn_to_use
     )
 
     train_loss, train_metrics = validate(model, train_loader, device, 0, writer=None)
@@ -240,34 +246,56 @@ def main():
     val_loss, val_metrics = validate(model, val_loader, device, 0, writer=None)
     logger.info(f"验证 - Loss: {val_loss:.4f}, "f"Pearson: {val_metrics['pearson_mean']:.4f}")
 
+    # 从checkpoint或config中获取include_article配置
+    include_article = checkpoint_config.get('include_article', config.include_article) if checkpoint_config else config.include_article
+    
     # 加载测试集
     logger.info("加载测试集...")
-    test_dataset = MultiInstancePersonalityDataset(
-        train_tsv_path=args.test_file,
-        articles_csv_path=args.articles_file,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        is_training=False,
-        use_gender=use_gender,
-        use_education=use_education,
-        use_race=use_race,
-        use_age=use_age,
-        use_income=use_income,
-        metadata_normalizer=metadata_normalizer
-    )
+    if use_multi_instance:
+        test_dataset = MultiInstancePersonalityDataset(
+            train_tsv_path=args.test_file,
+            articles_csv_path=args.articles_file,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            is_training=False,
+            use_gender=True,  # 默认全部使用
+            use_education=True,
+            use_race=True,
+            use_age=True,
+            use_income=True,
+            metadata_normalizer=metadata_normalizer,
+            include_article=include_article
+        )
+        test_collate_fn = collate_fn_multi_instance
+    else:
+        test_dataset = PersonalityDataset(
+            train_tsv_path=args.test_file,
+            articles_csv_path=args.articles_file,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            is_training=False,
+            use_gender=True,  # 默认全部使用
+            use_education=True,
+            use_race=True,
+            use_age=True,
+            use_income=True,
+            metadata_normalizer=metadata_normalizer,
+            include_article=include_article
+        )
+        test_collate_fn = collate_fn
     
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn_multi_instance
+        collate_fn=test_collate_fn
     )
     
     logger.info(f"测试集大小: {len(test_dataset)}")
     
     # 进行预测
     logger.info("开始预测...")
-    predictions, speaker_ids = predict(model, test_loader, device)
+    predictions, ids = predict(model, test_loader, device, is_multi_instance=use_multi_instance)
     
     # 如果normalizer存在，反归一化预测结果
     if normalizer is not None:
@@ -276,28 +304,30 @@ def main():
     else:
         logger.warning("没有normalizer，预测结果保持原样（可能在[0, 1]范围）")
     
-    # 将 speaker_id 的预测结果映射回所有 comment_id
-    # 读取测试数据，建立 speaker_id -> comment_ids 的映射
-    logger.info("将 speaker 预测结果映射回所有 comment...")
-    test_df = pd.read_csv(args.test_file, sep='\t')
-    
-    # 创建 speaker_id -> prediction 的映射
-    speaker_to_prediction = {}
-    for speaker_id, pred in zip(speaker_ids, predictions):
-        speaker_to_prediction[speaker_id] = pred
-    
-    # 为每个 comment 分配对应的预测结果
-    comment_predictions = []
-    for _, row in test_df.iterrows():
-        speaker_id = row['speaker_id']
-        if speaker_id in speaker_to_prediction:
-            comment_predictions.append(speaker_to_prediction[speaker_id])
-        else:
-            # 如果找不到对应的 speaker_id，使用零向量（不应该发生）
-            logger.warning(f"找不到 speaker_id {speaker_id} 的预测结果，使用零向量")
-            comment_predictions.append(np.zeros(5))
-    
-    comment_predictions = np.array(comment_predictions)
+    # 如果是聚合模式，需要将 speaker_id 的预测结果映射回所有 comment_id
+    if use_multi_instance:
+        logger.info("将 speaker 预测结果映射回所有 comment...")
+        test_df = pd.read_csv(args.test_file, sep='\t')
+        
+        # 创建 speaker_id -> prediction 的映射
+        speaker_to_prediction = {}
+        for speaker_id, pred in zip(ids, predictions):
+            speaker_to_prediction[speaker_id] = pred
+        
+        # 为每个 comment 分配对应的预测结果
+        comment_predictions = []
+        for _, row in test_df.iterrows():
+            speaker_id = row['speaker_id']
+            if speaker_id in speaker_to_prediction:
+                comment_predictions.append(speaker_to_prediction[speaker_id])
+            else:
+                logger.warning(f"找不到 speaker_id {speaker_id} 的预测结果，使用零向量")
+                comment_predictions.append(np.zeros(5))
+        
+        comment_predictions = np.array(comment_predictions)
+    else:
+        # 原始模式：预测结果直接对应每个comment
+        comment_predictions = predictions
     
     # 保存结果
     logger.info(f"保存预测结果到: {args.output_file}")

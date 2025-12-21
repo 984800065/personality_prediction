@@ -38,6 +38,11 @@ class Config:
     def articles_file(self) -> str:
         return os.getenv("ARTICLES_FILE", "datasets/news_personality/articles.csv")
     
+    @property
+    def include_article(self) -> bool:
+        """是否在tokenizer输入中包含新闻文本（默认False，只使用评论）"""
+        return os.getenv("INCLUDE_ARTICLE", "False").lower() == "true"
+    
     # ========== 模型配置 ==========
     @property
     def base_model(self) -> str:
@@ -56,16 +61,11 @@ class Config:
         """是否只使用本地模型文件，不连接 Hugging Face"""
         return os.getenv("LOCAL_FILES_ONLY", "False").lower() == "true"
     
-    # ========== 模型改进配置 ==========
+    # ========== 模型模式配置 ==========
     @property
-    def use_improved_model(self) -> bool:
-        """是否使用改进的模型架构"""
-        return os.getenv("USE_IMPROVED_MODEL", "False").lower() == "true"
-    
-    @property
-    def use_improved_pooling(self) -> bool:
-        """是否使用改进的池化（mean + max + cls）"""
-        return os.getenv("USE_IMPROVED_POOLING", "True").lower() == "true"
+    def use_multi_instance(self) -> bool:
+        """是否使用多实例学习模式（聚合模式），False表示使用原始模型模式"""
+        return os.getenv("USE_MULTI_INSTANCE", "False").lower() == "true"
     
     @property
     def use_mlp_head(self) -> bool:
@@ -81,7 +81,7 @@ class Config:
     @property
     def aggregation_method(self) -> str:
         """多实例聚合方法: 'attention', 'mean', 'max', 'transformer'"""
-        return os.getenv("AGGREGATION_METHOD", "attention")
+        return os.getenv("AGGREGATION_METHOD", "mean")
     
     @property
     def aggregation_hidden_size(self) -> int:
@@ -89,30 +89,7 @@ class Config:
         return int(os.getenv("AGGREGATION_HIDDEN_SIZE", "256"))
     
     # ========== Late Fusion 元数据配置 ==========
-    @property
-    def use_gender(self) -> bool:
-        """是否使用性别特征"""
-        return os.getenv("USE_GENDER", "True").lower() == "true"
-    
-    @property
-    def use_education(self) -> bool:
-        """是否使用教育程度特征"""
-        return os.getenv("USE_EDUCATION", "True").lower() == "true"
-    
-    @property
-    def use_race(self) -> bool:
-        """是否使用种族特征"""
-        return os.getenv("USE_RACE", "True").lower() == "true"
-    
-    @property
-    def use_age(self) -> bool:
-        """是否使用年龄特征"""
-        return os.getenv("USE_AGE", "True").lower() == "true"
-    
-    @property
-    def use_income(self) -> bool:
-        """是否使用收入特征"""
-        return os.getenv("USE_INCOME", "True").lower() == "true"
+    # 注意：元数据默认全部使用，不再提供单独的控制选项
     
     # ========== GPU和显存配置 ==========
     @property
@@ -253,14 +230,12 @@ class Config:
             "log_interval": self.log_interval,
             "log_level": self.log_level,
             "log_file": self.log_file,
-            "use_gender": self.use_gender,
-            "use_education": self.use_education,
-            "use_race": self.use_race,
-            "use_age": self.use_age,
-            "use_income": self.use_income,
-            "use_multi_instance": True,  # 统一使用多实例学习
-            "aggregation_method": self.aggregation_method,
-            "aggregation_hidden_size": self.aggregation_hidden_size,
+            "use_multi_instance": self.use_multi_instance,
+            "use_mlp_head": self.use_mlp_head,
+            "mlp_hidden_size": self.mlp_hidden_size,
+            "aggregation_method": self.aggregation_method if self.use_multi_instance else None,
+            "aggregation_hidden_size": self.aggregation_hidden_size if self.use_multi_instance else None,
+            "include_article": self.include_article,
         }
 
 
