@@ -17,7 +17,7 @@ import numpy as np
 from pathlib import Path
 import shutil
 
-from data_loader import PersonalityDataset, collate_fn
+from data_loader import PersonalityDataset, collate_fn, MetadataNormalizer
 from models.vanilla_model import PersonalityPredictor
 from utils import set_seed, compute_metrics
 from config import config
@@ -57,7 +57,8 @@ class CheckpointManager:
         is_best: bool = False,
         config_dict: Optional[Dict[str, Any]] = None,
         global_step: int = 0,
-        normalizer: Optional[LabelNormalizer] = None
+        normalizer: Optional[LabelNormalizer] = None,
+        metadata_normalizer: Optional[MetadataNormalizer] = None
     ) -> None:
         """
         保存checkpoint
@@ -78,6 +79,10 @@ class CheckpointManager:
         # 添加normalizer信息到config
         if normalizer is not None:
             final_config['normalizer'] = normalizer.to_dict()
+        
+        # 添加metadata_normalizer信息到config
+        if metadata_normalizer is not None:
+            final_config['metadata_normalizer'] = metadata_normalizer.to_dict()
         
         checkpoint = {
             'epoch': epoch,
@@ -147,6 +152,23 @@ def train_epoch(
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
         
+        # 准备元数据（如果存在）
+        model_kwargs = {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'labels': labels
+        }
+        if 'gender' in batch:
+            model_kwargs['gender'] = batch['gender'].to(device)
+        if 'education' in batch:
+            model_kwargs['education'] = batch['education'].to(device)
+        if 'race' in batch:
+            model_kwargs['race'] = batch['race'].to(device)
+        if 'age' in batch:
+            model_kwargs['age'] = batch['age'].to(device)
+        if 'income' in batch:
+            model_kwargs['income'] = batch['income'].to(device)
+        
         # 清零梯度
         optimizer.zero_grad()
         
@@ -154,18 +176,10 @@ def train_epoch(
         if scaler is not None:
             # 混合精度训练
             with torch.amp.autocast(device_type=device.type):
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels
-                )
+                outputs = model(**model_kwargs)
                 loss = outputs['loss']
         else:
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
+            outputs = model(**model_kwargs)
             loss = outputs['loss']
         
         logits = outputs['logits']
@@ -236,11 +250,24 @@ def validate(
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
+            # 准备元数据（如果存在）
+            model_kwargs = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'labels': labels
+            }
+            if 'gender' in batch:
+                model_kwargs['gender'] = batch['gender'].to(device)
+            if 'education' in batch:
+                model_kwargs['education'] = batch['education'].to(device)
+            if 'race' in batch:
+                model_kwargs['race'] = batch['race'].to(device)
+            if 'age' in batch:
+                model_kwargs['age'] = batch['age'].to(device)
+            if 'income' in batch:
+                model_kwargs['income'] = batch['income'].to(device)
+            
+            outputs = model(**model_kwargs)
             
             loss = outputs['loss']
             logits = outputs['logits']
@@ -295,19 +322,16 @@ def main() -> None:
         logger.info(f"验证：当前使用的配置文件路径应该是 {args.config}")
         logger.info(f"验证：base_model = {config.base_model}, batch_size = {config.batch_size}")
     
-    # 条件导入改进模型（在config加载后）
-    USE_IMPROVED_MODEL = False
-    ImprovedPersonalityPredictor = None
-    if config.use_improved_model:
-        try:
-            from models.improved_pooling_model import ImprovedPersonalityPredictor
-            USE_IMPROVED_MODEL = True
-            logger.info("✓ 已启用改进模型架构")
-        except ImportError as e:
-            logger.warning(f"无法导入改进模型: {e}，使用原始模型")
-            USE_IMPROVED_MODEL = False
-            
-    logger.info(f"使用的模型架构为: {'改进模型' if USE_IMPROVED_MODEL else '原始模型'}")
+    # 导入 Late Fusion 模型（统一使用，即使不使用元数据）
+    LateFusionPersonalityPredictor = None
+    try:
+        from models.late_fusion_model import LateFusionPersonalityPredictor
+        logger.info("✓ 已启用 Late Fusion 模型架构")
+        logger.info(f"  使用的元数据字段: gender={config.use_gender}, education={config.use_education}, "
+                   f"race={config.use_race}, age={config.use_age}, income={config.use_income}")
+    except ImportError as e:
+        logger.error(f"无法导入 Late Fusion 模型: {e}")
+        raise
     
     # 命令行参数覆盖配置
     base_model = args.base_model or config.base_model
@@ -316,7 +340,13 @@ def main() -> None:
     num_epochs = args.num_epochs or config.num_epochs
     
     # 设置随机种子
-    set_seed(config.seed)
+    seed = config.seed
+    if seed == -1:
+        import random
+        seed = random.randint(0, 2**31 - 1)
+        logger.info(f"SEED=-1，使用随机生成的种子: {seed}")
+    set_seed(seed)
+    logger.info(f"随机种子已设置为: {seed}")
     
     # 设备选择
     if torch.cuda.is_available():
@@ -367,10 +397,11 @@ def main() -> None:
         'batch_size': batch_size,
         'learning_rate': learning_rate,
         'num_epochs': num_epochs,
-        'use_improved_model': USE_IMPROVED_MODEL,  # 保存模型类型信息
-        'use_improved_pooling': config.use_improved_pooling if USE_IMPROVED_MODEL else False,
-        'use_mlp_head': config.use_mlp_head if USE_IMPROVED_MODEL else False,
-        'mlp_hidden_size': config.mlp_hidden_size if USE_IMPROVED_MODEL else 256,
+        'seed': seed,  # 保存实际使用的种子（如果原来是 -1，这里保存的是生成的随机种子）
+        'use_late_fusion_model': True,  # 统一使用 Late Fusion 模型
+        'use_improved_pooling': config.use_improved_pooling,
+        'use_mlp_head': config.use_mlp_head,
+        'mlp_hidden_size': config.mlp_hidden_size,
     })
     config_path = output_dir / 'config.json'
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -441,10 +472,19 @@ def main() -> None:
     
     # 如果从checkpoint恢复，尝试加载normalizer
     normalizer = None
-    if checkpoint_config and 'normalizer' in checkpoint_config:
-        logger.info("从checkpoint加载归一化参数...")
-        normalizer = LabelNormalizer.from_dict(checkpoint_config['normalizer'])
-    else:
+    metadata_normalizer = None
+    
+    if checkpoint_config:
+        if 'normalizer' in checkpoint_config:
+            logger.info("从checkpoint加载标签归一化参数...")
+            normalizer = LabelNormalizer.from_dict(checkpoint_config['normalizer'])
+        
+        if 'metadata_normalizer' in checkpoint_config:
+            logger.info("从checkpoint加载元数据归一化参数...")
+            metadata_normalizer = MetadataNormalizer.from_dict(checkpoint_config['metadata_normalizer'])
+    
+    # 如果还没有normalizer，需要计算
+    if normalizer is None or metadata_normalizer is None:
         # 先创建一个临时数据集来计算normalizer（不归一化）
         temp_dataset = PersonalityDataset(
             train_tsv_path=config.train_file,
@@ -452,22 +492,51 @@ def main() -> None:
             tokenizer=tokenizer,
             max_length=config.max_length,
             is_training=True,
-            normalizer=None  # 不归一化，用于计算min/max
+            normalizer=None,  # 不归一化，用于计算min/max
+            use_gender=config.use_gender,
+            use_education=config.use_education,
+            use_race=config.use_race,
+            use_age=config.use_age,
+            use_income=config.use_income,
+            metadata_normalizer=None
         )
         
         # 从训练数据计算normalizer
-        logger.info("计算标签归一化参数...")
-        normalizer = LabelNormalizer()
-        normalizer.fit(temp_dataset.labels)
+        if normalizer is None:
+            logger.info("计算标签归一化参数...")
+            normalizer = LabelNormalizer()
+            normalizer.fit(temp_dataset.labels)
+        
+        # 计算元数据归一化参数（如果使用了 age 或 income）
+        if metadata_normalizer is None and (config.use_age or config.use_income):
+            logger.info("计算元数据归一化参数...")
+            metadata_normalizer = MetadataNormalizer()
+            age_data = temp_dataset.metadata.get('age')
+            income_data = temp_dataset.metadata.get('income')
+            if age_data is not None:
+                age_data = np.array(age_data)
+            else:
+                age_data = np.array([])
+            if income_data is not None:
+                income_data = np.array(income_data)
+            else:
+                income_data = np.array([])
+            metadata_normalizer.fit(age_data, income_data)
     
-    # 使用normalizer创建实际的数据集（标签会被归一化）
+    # 使用normalizer创建实际的数据集（标签和元数据会被归一化）
     full_dataset = PersonalityDataset(
         train_tsv_path=config.train_file,
         articles_csv_path=config.articles_file,
         tokenizer=tokenizer,
         max_length=config.max_length,
         is_training=True,
-        normalizer=normalizer
+        normalizer=normalizer,
+        use_gender=config.use_gender,
+        use_education=config.use_education,
+        use_race=config.use_race,
+        use_age=config.use_age,
+        use_income=config.use_income,
+        metadata_normalizer=metadata_normalizer
     )
     
     # 划分训练集和验证集
@@ -503,22 +572,6 @@ def main() -> None:
         # checkpoint已在前面加载，这里只需要恢复训练状态
         # checkpoint_config也已在前面设置
         
-        # 如果checkpoint中有模型类型信息，使用checkpoint的配置
-        if checkpoint_config and 'use_improved_model' in checkpoint_config:
-            logger.info("检测到checkpoint中的模型配置，将使用checkpoint的模型类型")
-            # 临时更新USE_IMPROVED_MODEL以匹配checkpoint
-            if checkpoint_config['use_improved_model'] and not USE_IMPROVED_MODEL:
-                try:
-                    from models.improved_pooling_model import ImprovedPersonalityPredictor
-                    USE_IMPROVED_MODEL = True
-                    logger.warning("当前配置使用原始模型，但checkpoint使用改进模型，已切换到改进模型")
-                except ImportError:
-                    logger.error("checkpoint使用改进模型，但无法导入改进模型类，请确保improved_pooling_model.py存在")
-                    raise
-            elif not checkpoint_config['use_improved_model'] and USE_IMPROVED_MODEL:
-                logger.warning("当前配置使用改进模型，但checkpoint使用原始模型，将使用原始模型")
-                USE_IMPROVED_MODEL = False
-        
         # 恢复训练状态
         if 'epoch' in checkpoint:
             start_epoch = checkpoint['epoch'] + 1  # 从下一个epoch开始
@@ -541,44 +594,44 @@ def main() -> None:
     
     # 创建模型（根据checkpoint配置或当前配置）
     logger.info(f"创建模型: {base_model}")
-    if checkpoint_config and 'use_improved_model' in checkpoint_config:
-        # 使用checkpoint中的配置创建模型
-        if checkpoint_config['use_improved_model'] and USE_IMPROVED_MODEL and ImprovedPersonalityPredictor is not None:
-            logger.info("使用改进的模型架构（从checkpoint恢复）")
-            model = ImprovedPersonalityPredictor(
-                base_model_name=checkpoint_config.get('base_model', base_model),
-                num_labels=checkpoint_config.get('num_labels', config.num_labels),
-                freeze_base=checkpoint_config.get('freeze_base', config.freeze_base),
-                use_improved_pooling=checkpoint_config.get('use_improved_pooling', config.use_improved_pooling),
-                use_mlp_head=checkpoint_config.get('use_mlp_head', config.use_mlp_head),
-                mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size),
-                local_files_only=config.local_files_only
-            )
-        else:
-            logger.info("使用原始模型架构（从checkpoint恢复）")
-            model = PersonalityPredictor(
-                base_model_name=checkpoint_config.get('base_model', base_model),
-                num_labels=checkpoint_config.get('num_labels', config.num_labels),
-                freeze_base=checkpoint_config.get('freeze_base', config.freeze_base),
-                local_files_only=config.local_files_only
-            )
-    elif USE_IMPROVED_MODEL and ImprovedPersonalityPredictor is not None:
-        logger.info("使用改进的模型架构")
-        model = ImprovedPersonalityPredictor(
+    
+    # 统一使用 Late Fusion 模型
+    if LateFusionPersonalityPredictor is None:
+        logger.error("Late Fusion 模型未导入，无法创建模型")
+        raise RuntimeError("Late Fusion 模型未导入")
+    
+    # 创建模型
+    if checkpoint_config:
+        logger.info("使用 Late Fusion 模型架构（从checkpoint恢复）")
+        model = LateFusionPersonalityPredictor(
+            base_model_name=checkpoint_config.get('base_model', base_model),
+            num_labels=checkpoint_config.get('num_labels', config.num_labels),
+            freeze_base=checkpoint_config.get('freeze_base', config.freeze_base),
+            use_improved_pooling=checkpoint_config.get('use_improved_pooling', config.use_improved_pooling),
+            use_mlp_head=checkpoint_config.get('use_mlp_head', config.use_mlp_head),
+            mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size),
+            local_files_only=config.local_files_only,
+            use_gender=checkpoint_config.get('use_gender', config.use_gender),
+            use_education=checkpoint_config.get('use_education', config.use_education),
+            use_race=checkpoint_config.get('use_race', config.use_race),
+            use_age=checkpoint_config.get('use_age', config.use_age),
+            use_income=checkpoint_config.get('use_income', config.use_income)
+        )
+    else:
+        logger.info("使用 Late Fusion 模型架构")
+        model = LateFusionPersonalityPredictor(
             base_model_name=base_model,
             num_labels=config.num_labels,
             freeze_base=config.freeze_base,
             use_improved_pooling=config.use_improved_pooling,
             use_mlp_head=config.use_mlp_head,
             mlp_hidden_size=config.mlp_hidden_size,
-            local_files_only=config.local_files_only
-        )
-    else:
-        model = PersonalityPredictor(
-            base_model_name=base_model,
-            num_labels=config.num_labels,
-            freeze_base=config.freeze_base,
-            local_files_only=config.local_files_only
+            local_files_only=config.local_files_only,
+            use_gender=config.use_gender,
+            use_education=config.use_education,
+            use_race=config.use_race,
+            use_age=config.use_age,
+            use_income=config.use_income
         )
     model.to(device)
     
@@ -599,15 +652,15 @@ def main() -> None:
         weight_decay=config.weight_decay
     )
     
-    # 使用自适应学习率调度器（基于验证指标）
+    # 使用自适应学习率调度器（基于验证损失）
     scheduler = ReduceLROnPlateau(
         optimizer,
-        mode='max',  # 'max' 表示监控指标越大越好（Pearson相关系数）
-        factor=0.8,  # 学习率降低为原来的0.5倍
-        patience=3,  # 10个epoch没有改善就降低学习率
+        mode='min',  # 'min' 表示监控指标越小越好（验证损失）
+        factor=0.8,  # 学习率降低为原来的0.8倍
+        patience=10,  # 3个epoch没有改善就降低学习率
         min_lr=1e-7  # 最小学习率
     )
-    logger.info("✓ 已启用自适应学习率调度器 (ReduceLROnPlateau)")
+    logger.info("✓ 已启用自适应学习率调度器 (ReduceLROnPlateau, 基于验证损失)")
     
     # 混合精度训练（FP16）
     scaler = None
@@ -652,8 +705,8 @@ def main() -> None:
         logger.info(f"验证 - Loss: {val_loss:.4f}, "
                     f"Pearson: {val_metrics['pearson_mean']:.4f}")
         
-        # 自适应学习率调度：基于验证指标调整学习率
-        scheduler.step(val_metrics['pearson_mean'])
+        # 自适应学习率调度：基于验证损失调整学习率
+        scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         logger.info(f"当前学习率: {current_lr:.2e}")
         
@@ -679,7 +732,8 @@ def main() -> None:
                 is_best=is_best,
                 config_dict=config_dict,
                 global_step=global_step,
-                normalizer=normalizer
+                normalizer=normalizer,
+                metadata_normalizer=metadata_normalizer
             )
     
     # 关闭TensorBoard writer

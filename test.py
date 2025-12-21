@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from tqdm.auto import tqdm
 
-from data_loader import PersonalityDataset, collate_fn
+from data_loader import PersonalityDataset, collate_fn, MetadataNormalizer
 from models.vanilla_model import PersonalityPredictor
 from utils import set_seed
 from config import config
@@ -18,22 +18,20 @@ from logger_config import setup_logger
 from label_normalizer import LabelNormalizer
 from train import validate
 
-# 条件导入改进模型
-USE_IMPROVED_MODEL = False
-ImprovedPersonalityPredictor = None
-if config.use_improved_model:
-    try:
-        from models.improved_pooling_model import ImprovedPersonalityPredictor
-        USE_IMPROVED_MODEL = True
-    except ImportError:
-        USE_IMPROVED_MODEL = False
-
 # 设置logger
 logger = setup_logger(
     log_level=config.log_level,
     log_file=config.log_file,
     log_dir=config.log_dir
 )
+
+# 统一使用 Late Fusion 模型
+LateFusionPersonalityPredictor = None
+try:
+    from models.late_fusion_model import LateFusionPersonalityPredictor
+except ImportError as e:
+    logger.error(f"无法导入 Late Fusion 模型: {e}")
+    raise
 
 
 def predict(model, dataloader, device):
@@ -47,10 +45,23 @@ def predict(model, dataloader, device):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
+            # 准备元数据（如果存在）
+            model_kwargs = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask
+            }
+            if 'gender' in batch:
+                model_kwargs['gender'] = batch['gender'].to(device)
+            if 'education' in batch:
+                model_kwargs['education'] = batch['education'].to(device)
+            if 'race' in batch:
+                model_kwargs['race'] = batch['race'].to(device)
+            if 'age' in batch:
+                model_kwargs['age'] = batch['age'].to(device)
+            if 'income' in batch:
+                model_kwargs['income'] = batch['income'].to(device)
+            
+            outputs = model(**model_kwargs)
             
             logits = outputs['logits']
             all_predictions.append(logits.cpu().numpy())
@@ -63,7 +74,7 @@ def predict(model, dataloader, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default='checkpoints/best_model.pt', 
+    parser.add_argument('--checkpoint', type=str, default='checkpoints/roberta_base/best_model.pt', 
                        help='模型检查点路径', )
     parser.add_argument('--test_file', type=str,
                        default='datasets/news_personality/test.tsv')
@@ -88,16 +99,22 @@ def main():
     # 获取配置（使用checkpoint_config避免覆盖全局config）
     checkpoint_config = None
     normalizer = None
+    metadata_normalizer = None
     if 'config' in checkpoint:
         checkpoint_config = checkpoint['config']
         base_model = checkpoint_config.get('base_model', 'roberta-base')
         
         # 加载normalizer（如果存在）
         if 'normalizer' in checkpoint_config:
-            logger.info("从checkpoint加载归一化参数...")
+            logger.info("从checkpoint加载标签归一化参数...")
             normalizer = LabelNormalizer.from_dict(checkpoint_config['normalizer'])
         else:
-            logger.warning("Checkpoint中没有归一化参数，预测结果将不会被反归一化")
+            logger.warning("Checkpoint中没有标签归一化参数，预测结果将不会被反归一化")
+        
+        # 加载metadata_normalizer（如果存在）
+        if 'metadata_normalizer' in checkpoint_config:
+            logger.info("从checkpoint加载元数据归一化参数...")
+            metadata_normalizer = MetadataNormalizer.from_dict(checkpoint_config['metadata_normalizer'])
     else:
         # 如果没有配置，使用默认模型
         base_model = 'roberta-base'
@@ -128,43 +145,54 @@ def main():
             local_files_only=local_files_only
         )
     
-    # 创建模型
+    # 创建模型（统一使用 Late Fusion 模型）
     logger.info("创建模型...")
-    # 检查checkpoint中是否包含改进模型的配置
-    is_improved_model = False
-    if checkpoint_config is not None:
-        is_improved_model = checkpoint_config.get('use_improved_model', False)
     
-    if is_improved_model and USE_IMPROVED_MODEL and ImprovedPersonalityPredictor is not None:
-        logger.info("使用改进的模型架构")
-        model = ImprovedPersonalityPredictor(
-            base_model_name=base_model,
-            num_labels=5,
-            use_improved_pooling=checkpoint_config.get('use_improved_pooling', True) if checkpoint_config else True,
-            use_mlp_head=checkpoint_config.get('use_mlp_head', True) if checkpoint_config else True,
-            mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', 256) if checkpoint_config else 256,
-            local_files_only=config.local_files_only
-        )
-    else:
-        model = PersonalityPredictor(
-            base_model_name=base_model,
-            num_labels=5,
-            local_files_only=config.local_files_only
-        )
+    if LateFusionPersonalityPredictor is None:
+        logger.error("Late Fusion 模型未导入，无法创建模型")
+        raise RuntimeError("Late Fusion 模型未导入")
+    
+    logger.info("使用 Late Fusion 模型架构")
+    model = LateFusionPersonalityPredictor(
+        base_model_name=base_model,
+        num_labels=5,
+        use_improved_pooling=checkpoint_config.get('use_improved_pooling', config.use_improved_pooling) if checkpoint_config else config.use_improved_pooling,
+        use_mlp_head=checkpoint_config.get('use_mlp_head', config.use_mlp_head) if checkpoint_config else config.use_mlp_head,
+        mlp_hidden_size=checkpoint_config.get('mlp_hidden_size', config.mlp_hidden_size) if checkpoint_config else config.mlp_hidden_size,
+        local_files_only=config.local_files_only,
+        use_gender=checkpoint_config.get('use_gender', config.use_gender) if checkpoint_config else config.use_gender,
+        use_education=checkpoint_config.get('use_education', config.use_education) if checkpoint_config else config.use_education,
+        use_race=checkpoint_config.get('use_race', config.use_race) if checkpoint_config else config.use_race,
+        use_age=checkpoint_config.get('use_age', config.use_age) if checkpoint_config else config.use_age,
+        use_income=checkpoint_config.get('use_income', config.use_income) if checkpoint_config else config.use_income
+    )
     
     # 加载权重
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
     model.eval()
     
-        # 使用normalizer创建实际的数据集（标签会被归一化）
+    # 获取元数据配置（从checkpoint或当前config）
+    use_gender = checkpoint_config.get('use_gender', config.use_gender) if checkpoint_config else config.use_gender
+    use_education = checkpoint_config.get('use_education', config.use_education) if checkpoint_config else config.use_education
+    use_race = checkpoint_config.get('use_race', config.use_race) if checkpoint_config else config.use_race
+    use_age = checkpoint_config.get('use_age', config.use_age) if checkpoint_config else config.use_age
+    use_income = checkpoint_config.get('use_income', config.use_income) if checkpoint_config else config.use_income
+    
+    # 使用normalizer创建实际的数据集（标签会被归一化）
     full_dataset = PersonalityDataset(
         train_tsv_path=config.train_file,
         articles_csv_path=config.articles_file,
         tokenizer=tokenizer,
         max_length=config.max_length,
         is_training=True,
-        normalizer=normalizer
+        normalizer=normalizer,
+        use_gender=use_gender,
+        use_education=use_education,
+        use_race=use_race,
+        use_age=use_age,
+        use_income=use_income,
+        metadata_normalizer=metadata_normalizer
     )
     
     # 划分训练集和验证集
@@ -201,7 +229,13 @@ def main():
         articles_csv_path=args.articles_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        is_training=False
+        is_training=False,
+        use_gender=use_gender,
+        use_education=use_education,
+        use_race=use_race,
+        use_age=use_age,
+        use_income=use_income,
+        metadata_normalizer=metadata_normalizer
     )
     
     test_loader = DataLoader(

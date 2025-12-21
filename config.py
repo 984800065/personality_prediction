@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 class Config:
     """配置类，管理所有配置参数"""
     
-    def __init__(self, env_file: str = ".env_original"):
+    def __init__(self, env_file: str = ".env"):
         """
         初始化配置
         
@@ -77,6 +77,32 @@ class Config:
         """MLP隐藏层大小"""
         return int(os.getenv("MLP_HIDDEN_SIZE", "256"))
     
+    # ========== Late Fusion 元数据配置 ==========
+    @property
+    def use_gender(self) -> bool:
+        """是否使用性别特征"""
+        return os.getenv("USE_GENDER", "True").lower() == "true"
+    
+    @property
+    def use_education(self) -> bool:
+        """是否使用教育程度特征"""
+        return os.getenv("USE_EDUCATION", "True").lower() == "true"
+    
+    @property
+    def use_race(self) -> bool:
+        """是否使用种族特征"""
+        return os.getenv("USE_RACE", "True").lower() == "true"
+    
+    @property
+    def use_age(self) -> bool:
+        """是否使用年龄特征"""
+        return os.getenv("USE_AGE", "True").lower() == "true"
+    
+    @property
+    def use_income(self) -> bool:
+        """是否使用收入特征"""
+        return os.getenv("USE_INCOME", "True").lower() == "true"
+    
     # ========== GPU和显存配置 ==========
     @property
     def gpu_id(self) -> Optional[int]:
@@ -123,6 +149,7 @@ class Config:
     
     @property
     def seed(self) -> int:
+        """获取随机种子，如果 SEED == -1 则返回 -1（由调用方处理）"""
         return int(os.getenv("SEED", "42"))
     
     @property
@@ -215,6 +242,11 @@ class Config:
             "log_interval": self.log_interval,
             "log_level": self.log_level,
             "log_file": self.log_file,
+            "use_gender": self.use_gender,
+            "use_education": self.use_education,
+            "use_race": self.use_race,
+            "use_age": self.use_age,
+            "use_income": self.use_income,
         }
 
 
