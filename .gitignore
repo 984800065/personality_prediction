@@ -47,7 +47,7 @@ runs/
 *~
 
 # 数据（如果不想提交）
-# datasets/
+datasets/
 
 # 预测结果
 predictions.tsv
@@ -59,6 +59,3 @@ predictions.tsv
 # OS
 .DS_Store
 Thumbs.db
-
-# datasets
-datasets/
