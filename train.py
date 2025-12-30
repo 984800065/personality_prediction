@@ -819,9 +819,24 @@ def main() -> None:
             best_val_score = val_metrics['pearson_mean']
             best_epoch = epoch
         
-        # 保存checkpoint
-        should_save = (config.save_every_n_epochs == 0) or (epoch % config.save_every_n_epochs == 0)
-        if should_save and (not config.save_best_only or is_best):
+        # 判断是否应该保存checkpoint
+        # 1. 检查是否在保存范围内（从最后x个epoch开始保存）
+        save_checkpoint_from_epoch = config.save_checkpoint_from_epoch
+        if save_checkpoint_from_epoch == -1:
+            # -1 表示全程都保存
+            in_save_range = True
+        else:
+            # 计算从哪个epoch开始保存（从1开始计数）
+            start_save_epoch = config.num_epochs - save_checkpoint_from_epoch + 1
+            in_save_range = epoch >= start_save_epoch
+        
+        # 2. 检查保存间隔
+        should_save_by_interval = (config.save_every_n_epochs == 0) or (epoch % config.save_every_n_epochs == 0)
+        
+        # 3. 检查是否只保存最佳模型
+        should_save = in_save_range and should_save_by_interval and (not config.save_best_only or is_best)
+        
+        if should_save:
             checkpoint_manager.save(
                 model=model,
                 optimizer=optimizer,

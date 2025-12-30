@@ -25,6 +25,7 @@ class PersonalityPredictor(nn.Module):
         use_mlp_head: bool = True,
         mlp_hidden_size: int = 256,
         local_files_only: bool = False,
+        use_metadata: bool = True,  # 是否使用metadata
         # 元数据编码维度
         gender_embed_dim: int = 8,
         education_embed_dim: int = 16,
@@ -41,6 +42,7 @@ class PersonalityPredictor(nn.Module):
             use_mlp_head: 是否使用MLP回归头（默认True）
             mlp_hidden_size: MLP隐藏层大小
             local_files_only: 是否只使用本地模型文件
+            use_metadata: 是否使用metadata（控制分类头上是否有metadata的维度拼接），默认True
             gender_embed_dim: 性别嵌入维度
             education_embed_dim: 教育程度嵌入维度
             race_embed_dim: 种族嵌入维度
@@ -52,6 +54,7 @@ class PersonalityPredictor(nn.Module):
         self.base_model_name = base_model_name
         self.num_labels = num_labels
         self.use_mlp_head = use_mlp_head
+        self.use_metadata = use_metadata
         
         # 加载基座模型（使用统一的加载函数）
         self.base_model, self.hidden_size = load_base_model(
@@ -65,18 +68,23 @@ class PersonalityPredictor(nn.Module):
         # 文本特征维度（使用[CLS] token）
         text_feature_dim = self.hidden_size
         
-        # ========== 元数据编码器（默认全部使用）==========
-        self.metadata_encoder = MetadataEncoder(
-            gender_embed_dim=gender_embed_dim,
-            education_embed_dim=education_embed_dim,
-            race_embed_dim=race_embed_dim,
-            age_norm_dim=age_norm_dim,
-            income_norm_dim=income_norm_dim,
-            dropout=dropout
-        )
+        # ========== 元数据编码器（根据use_metadata决定是否创建）==========
+        if use_metadata:
+            self.metadata_encoder = MetadataEncoder(
+                gender_embed_dim=gender_embed_dim,
+                education_embed_dim=education_embed_dim,
+                race_embed_dim=race_embed_dim,
+                age_norm_dim=age_norm_dim,
+                income_norm_dim=income_norm_dim,
+                dropout=dropout
+            )
+            metadata_dim = self.metadata_encoder.feature_dim
+        else:
+            self.metadata_encoder = None
+            metadata_dim = 0
         
         # ========== 融合层 ==========
-        fused_feature_dim = text_feature_dim + self.metadata_encoder.feature_dim
+        fused_feature_dim = text_feature_dim + metadata_dim
         
         # 回归头
         if use_mlp_head:
@@ -146,19 +154,22 @@ class PersonalityPredictor(nn.Module):
         # Dropout
         text_features = self.dropout(text_features)
         
-        # 编码元数据特征（使用统一的编码器）
-        metadata_features = self.metadata_encoder(
-            gender=gender,
-            education=education,
-            race=race,
-            age=age,
-            income=income
-        )
-        
-        # Late Fusion: 拼接文本特征和元数据特征
-        if metadata_features.size(1) > 0:
-            fused_features = torch.cat([text_features, metadata_features], dim=1)
+        # 编码元数据特征（根据use_metadata决定是否使用）
+        if self.use_metadata and self.metadata_encoder is not None:
+            metadata_features = self.metadata_encoder(
+                gender=gender,
+                education=education,
+                race=race,
+                age=age,
+                income=income
+            )
+            # Late Fusion: 拼接文本特征和元数据特征
+            if metadata_features.size(1) > 0:
+                fused_features = torch.cat([text_features, metadata_features], dim=1)
+            else:
+                fused_features = text_features
         else:
+            # 不使用metadata，只使用文本特征
             fused_features = text_features
         
         # 回归预测

@@ -61,6 +61,11 @@ class Config:
         """是否只使用本地模型文件，不连接 Hugging Face"""
         return os.getenv("LOCAL_FILES_ONLY", "False").lower() == "true"
     
+    @property
+    def use_metadata(self) -> bool:
+        """是否使用metadata（控制模型分类头上是否有metadata的维度拼接），默认True"""
+        return os.getenv("USE_METADATA", "True").lower() == "true"
+    
     # ========== 模型模式配置 ==========
     @property
     def use_multi_instance(self) -> bool:
@@ -182,6 +187,16 @@ class Config:
         """最多保留的checkpoint数量（0表示不限制）"""
         return int(os.getenv("MAX_CHECKPOINTS", "0"))
     
+    @property
+    def save_checkpoint_from_epoch(self) -> int:
+        """
+        从第几个epoch开始保存checkpoint（从末尾计算）
+        例如：如果总epochs=100，save_checkpoint_from_epoch=10，则从第91个epoch开始保存
+        如果为-1，则全程都保存checkpoint（原有逻辑）
+        默认值：10
+        """
+        return int(os.getenv("SAVE_CHECKPOINT_FROM_EPOCH", "10"))
+    
     # ========== TensorBoard配置 ==========
     @property
     def use_tensorboard(self) -> bool:
@@ -226,6 +241,7 @@ class Config:
             "save_every_n_epochs": self.save_every_n_epochs,
             "save_best_only": self.save_best_only,
             "max_checkpoints": self.max_checkpoints,
+            "save_checkpoint_from_epoch": self.save_checkpoint_from_epoch,
             "use_tensorboard": self.use_tensorboard,
             "log_interval": self.log_interval,
             "log_level": self.log_level,
@@ -235,6 +251,7 @@ class Config:
             "mlp_hidden_size": self.mlp_hidden_size,
             "aggregation_method": self.aggregation_method if self.use_multi_instance else None,
             "aggregation_hidden_size": self.aggregation_hidden_size if self.use_multi_instance else None,
+            "use_metadata": self.use_metadata,
             "include_article": self.include_article,
         }
 

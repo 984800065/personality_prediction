@@ -28,6 +28,7 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         use_mlp_head: bool = True,  # 聚合模式默认使用MLP回归头
         mlp_hidden_size: int = 256,
         local_files_only: bool = False,
+        use_metadata: bool = True,  # 是否使用metadata
         # 元数据字段启用/禁用
         use_gender: bool = True,
         use_education: bool = True,
@@ -54,6 +55,7 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
             use_mlp_head: 是否使用MLP回归头
             mlp_hidden_size: MLP隐藏层大小
             local_files_only: 是否只使用本地模型文件
+            use_metadata: 是否使用metadata（控制分类头上是否有metadata的维度拼接），默认True
             use_gender: 是否使用性别特征
             use_education: 是否使用教育程度特征
             use_race: 是否使用种族特征
@@ -74,6 +76,7 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         self.use_improved_pooling = use_improved_pooling
         self.use_mlp_head = use_mlp_head
         self.aggregation_method = aggregation_method
+        self.use_metadata = use_metadata
         
         # 保存元数据字段启用状态
         self.use_gender = use_gender
@@ -123,19 +126,24 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
             # mean 或 max 聚合，不需要额外参数
             aggregated_text_feature_dim = text_feature_dim
         
-        # ========== 元数据编码器（默认全部使用）==========
-        self.metadata_encoder = MetadataEncoder(
-            gender_embed_dim=gender_embed_dim,
-            education_embed_dim=education_embed_dim,
-            race_embed_dim=race_embed_dim,
-            age_norm_dim=age_norm_dim,
-            income_norm_dim=income_norm_dim,
-            dropout=dropout
-        )
+        # ========== 元数据编码器（根据use_metadata决定是否创建）==========
+        if use_metadata:
+            self.metadata_encoder = MetadataEncoder(
+                gender_embed_dim=gender_embed_dim,
+                education_embed_dim=education_embed_dim,
+                race_embed_dim=race_embed_dim,
+                age_norm_dim=age_norm_dim,
+                income_norm_dim=income_norm_dim,
+                dropout=dropout
+            )
+            metadata_dim = self.metadata_encoder.feature_dim
+        else:
+            self.metadata_encoder = None
+            metadata_dim = 0
         
         # ========== 融合层 ==========
         # 聚合后的文本特征 + 元数据特征的总维度
-        fused_feature_dim = aggregated_text_feature_dim + self.metadata_encoder.feature_dim
+        fused_feature_dim = aggregated_text_feature_dim + metadata_dim
         
         # 回归头
         if use_mlp_head:
@@ -377,19 +385,22 @@ class MultiInstanceLateFusionPersonalityPredictor(nn.Module):
         # Stack: [batch_size, aggregated_text_feature_dim]
         aggregated_text_features = torch.stack(aggregated_text_features, dim=0)
         
-        # 编码元数据特征（使用统一的编码器）
-        metadata_features = self.metadata_encoder(
-            gender=gender,
-            education=education,
-            race=race,
-            age=age,
-            income=income
-        )
-        
-        # Late Fusion: 拼接聚合后的文本特征和元数据特征
-        if metadata_features.size(1) > 0:
-            fused_features = torch.cat([aggregated_text_features, metadata_features], dim=1)
+        # 编码元数据特征（根据use_metadata决定是否使用）
+        if self.use_metadata and self.metadata_encoder is not None:
+            metadata_features = self.metadata_encoder(
+                gender=gender,
+                education=education,
+                race=race,
+                age=age,
+                income=income
+            )
+            # Late Fusion: 拼接聚合后的文本特征和元数据特征
+            if metadata_features.size(1) > 0:
+                fused_features = torch.cat([aggregated_text_features, metadata_features], dim=1)
+            else:
+                fused_features = aggregated_text_features
         else:
+            # 不使用metadata，只使用聚合后的文本特征
             fused_features = aggregated_text_features
         
         # 回归预测

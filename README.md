@@ -55,10 +55,10 @@ MAX_CHECKPOINTS=5  # 最多保留5个checkpoint
 ### 主要配置项
 
 - **数据路径**: `TRAIN_FILE`, `TEST_FILE`, `ARTICLES_FILE`
-- **模型配置**: `BASE_MODEL`, `NUM_LABELS`, `FREEZE_BASE`
+- **模型配置**: `BASE_MODEL`, `NUM_LABELS`, `FREEZE_BASE`, `USE_METADATA`
 - **训练配置**: `BATCH_SIZE`, `LEARNING_RATE`, `NUM_EPOCHS`, `MAX_LENGTH`
 - **GPU和显存优化**: `GPU_ID`, `FP16`, `GRADIENT_CHECKPOINTING`
-- **Checkpoint**: `SAVE_EVERY_N_EPOCHS`, `SAVE_BEST_ONLY`, `MAX_CHECKPOINTS`
+- **Checkpoint**: `SAVE_EVERY_N_EPOCHS`, `SAVE_BEST_ONLY`, `MAX_CHECKPOINTS`, `SAVE_CHECKPOINT_FROM_EPOCH`
 - **TensorBoard**: `USE_TENSORBOARD`, `LOG_INTERVAL`
 - **日志**: `LOG_LEVEL`, `LOG_FILE`
 
@@ -146,6 +146,7 @@ TensorBoard会记录：
 - **最佳模型**: 自动保存为 `checkpoints/best_model.pt`
 - **定期保存**: 根据`SAVE_EVERY_N_EPOCHS`配置定期保存
 - **自动清理**: 如果设置了`MAX_CHECKPOINTS`，会自动清理旧checkpoint
+- **保存范围**: 通过`SAVE_CHECKPOINT_FROM_EPOCH`控制从最后几个epoch开始保存（默认10，-1表示全程保存）
 
 Checkpoint包含：
 - 模型权重
@@ -167,11 +168,14 @@ python test_for_bert_base_personality.py --test_file datasets/news_personality/t
 ## 支持的基座模型
 
 - `roberta-base`（默认）
+- `Minej/bert-base-personality`（专门用于大五人格预测的BERT模型，会自动提取encoder部分）
 - `Alibaba-NLP/gte-multilingual-base`
 - `bert-base-uncased`
 - `microsoft/deberta-base`
 - `distilbert-base-uncased`
 - 或其他transformers支持的模型
+
+**注意**：`Minej/bert-base-personality` 是一个带分类头的模型，系统会自动提取其BERT encoder部分作为基座模型使用。
 
 ## 模型架构
 
@@ -257,6 +261,33 @@ BASE_MODEL=bert-base-uncased
 FREEZE_BASE=True
 ```
 
+### 使用人格预测专用BERT模型
+
+`Minej/bert-base-personality` 是一个专门用于大五人格预测的BERT模型，系统会自动提取其encoder部分：
+
+修改`.env`文件：
+```bash
+BASE_MODEL=Minej/bert-base-personality
+```
+
+然后运行：
+```bash
+python train.py
+```
+
+**注意**：该模型基于 `bert-base-uncased` 在大五人格数据集上微调，系统会自动提取BERT encoder部分，忽略其分类头。
+
+### 禁用metadata
+
+如果不想使用metadata（只使用文本特征），可以设置：
+
+修改`.env`文件：
+```bash
+USE_METADATA=False
+```
+
+**注意**：当`USE_METADATA=False`时，模型的分类头只使用文本特征，不会拼接metadata的维度。默认值为`True`。
+
 ### 只保存最佳模型
 
 修改`.env`文件：
@@ -271,6 +302,23 @@ SAVE_EVERY_N_EPOCHS=0
 ```bash
 MAX_CHECKPOINTS=5  # 只保留最新的5个checkpoint
 ```
+
+### 只在最后几个epoch保存checkpoint
+
+如果训练很多epoch，可以只在最后几个epoch保存checkpoint以节省存储空间：
+
+修改`.env`文件：
+```bash
+# 只在最后10个epoch保存checkpoint（如果总epochs=100，则从第91个epoch开始保存）
+SAVE_CHECKPOINT_FROM_EPOCH=10
+
+# 如果想全程都保存checkpoint，设置为-1
+SAVE_CHECKPOINT_FROM_EPOCH=-1
+```
+
+**注意**：`SAVE_CHECKPOINT_FROM_EPOCH` 与 `SAVE_EVERY_N_EPOCHS` 配合使用：
+- 如果 `SAVE_CHECKPOINT_FROM_EPOCH=10`，`SAVE_EVERY_N_EPOCHS=2`，总epochs=100
+- 则从第91个epoch开始，每2个epoch保存一次checkpoint（即91, 93, 95, 97, 99, 100）
 
 ### 显存优化配置
 

@@ -50,6 +50,7 @@ def create_model(
         use_mlp_head = get_param('use_mlp_head', True)
         mlp_hidden_size = get_param('mlp_hidden_size', 256)
         local_files_only = config.local_files_only if config else False
+        use_metadata = get_param('use_metadata', True)
         aggregation_method = get_param('aggregation_method', 'mean')
         aggregation_hidden_size = get_param('aggregation_hidden_size', 256)
         
@@ -66,6 +67,7 @@ def create_model(
             use_mlp_head=use_mlp_head,
             mlp_hidden_size=mlp_hidden_size,
             local_files_only=local_files_only,
+            use_metadata=use_metadata,
             use_gender=True,  # 默认全部使用
             use_education=True,
             use_race=True,
@@ -94,6 +96,7 @@ def create_model(
         use_mlp_head = get_param('use_mlp_head', True)
         mlp_hidden_size = get_param('mlp_hidden_size', 256)
         local_files_only = config.local_files_only if config else False
+        use_metadata = get_param('use_metadata', True)
         
         if checkpoint_config:
             logger.info("使用原始模型模式（PersonalityPredictor with Late Fusion，从checkpoint恢复）")
@@ -106,7 +109,8 @@ def create_model(
             freeze_base=freeze_base,
             use_mlp_head=use_mlp_head,
             mlp_hidden_size=mlp_hidden_size,
-            local_files_only=local_files_only
+            local_files_only=local_files_only,
+            use_metadata=use_metadata
         )
     
     # 如果提供了device，将模型移动到该设备
