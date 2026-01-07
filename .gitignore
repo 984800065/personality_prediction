@@ -62,3 +62,6 @@ Thumbs.db
 
 # reports
 reports/
+
+# zip
+*.zip

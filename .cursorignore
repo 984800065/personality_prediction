@@ -3,3 +3,6 @@ checkpoints/
 
 # datasets
 datasets/
+
+# zip
+*.zip
